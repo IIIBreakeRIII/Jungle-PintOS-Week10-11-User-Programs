@@ -30,7 +30,7 @@ static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
-void user_stack_build(struct intr_frame* _if, int argc, char* argv_temp);
+void user_stack_build(struct intr_frame* if_, int argc, char* argv_temp[]);
 
 
 // ELF 바이너리를 로드하고 프로세스를 시작합니다.
@@ -174,10 +174,8 @@ error:
 	thread_exit ();
 }
 
-void user_stack_build(struct intr_frame* _if, int argc, char* argv_temp) {
-	 // --- 올바른 스택 조립 순서 ---
-
-    void* rsp = (void*) _if->rsp; // USER_STACK에서 시작
+void user_stack_build(struct intr_frame* if_, int argc, char* argv_temp[]) {
+	void* rsp = (void*) if_->rsp; // USER_STACK에서 시작
     char* argv_addrs[argc];
 
     // 1. 문자열 데이터 쌓기 (이 부분은 정확합니다)
@@ -208,18 +206,20 @@ void user_stack_build(struct intr_frame* _if, int argc, char* argv_temp) {
     // --- 최종 intr_frame 설정 ---
     
     // 이제 rsp는 argv 배열의 시작 주소를 가리킴. 이 값을 rsi에 설정.
-	_if->R.rsi = (uint64_t) rsp;
+	if_->R.rsi = (uint64_t) rsp;
     // argc 값을 rdi에 설정
-    _if->R.rdi = argc;
+	if_->R.rdi = argc;
 
     // 5. 가짜 반환 주소 쌓기
     rsp -= sizeof(void *);
     *((void **) rsp) = NULL;
 
     // 모든 작업이 끝난 후의 rsp 값을 intr_frame에 최종 설정
-    _if->rsp = (uint64_t) rsp;
-}
+    if_->rsp = (uint64_t) rsp;
 
+	// argc 값을 rdi에 설정
+	if_->R.rdi = argc;
+}
 
 /* Switch the current execution context to the f_name.
  * Returns -1 on fail. */
@@ -278,51 +278,7 @@ process_exec (void *f_name) {
 		return -1;
 	}
 
-	void* rsp = (void*) _if.rsp; // USER_STACK에서 시작
-    char* argv_addrs[argc];
-
-    // 1. 문자열 데이터 쌓기 (이 부분은 정확합니다)
-    for (int i = argc - 1; i >= 0; i--) {
-        int arg_len = strlen(argv_temp[i]) + 1;
-        rsp -= arg_len;
-        memcpy(rsp, argv_temp[i], arg_len);
-        argv_addrs[i] = rsp;
-    }
-
-    // 2. 워드 정렬 패딩 쌓기 (문자열 다음, 주소 이전)
-    int padding = (uintptr_t) rsp % 8;
-    if (padding != 0) {
-        rsp -= padding;
-        memset(rsp, 0, padding);
-    }
-
-    // 3. NULL 포인터 센티널 쌓기 (argv[argc])
-    rsp -= sizeof(char *);
-    *((char **) rsp) = NULL;
-
-    // 4. 문자열 주소(포인터) 쌓기
-    for (int i = argc - 1; i >= 0; i--) {
-        rsp -= sizeof(char *);
-        *((char **) rsp) = argv_addrs[i];
-    }
-
-    // --- 최종 intr_frame 설정 ---
-    
-    // 이제 rsp는 argv 배열의 시작 주소를 가리킴. 이 값을 rsi에 설정.
-	_if.R.rsi = (uint64_t) rsp;
-    // argc 값을 rdi에 설정
-    _if.R.rdi = argc;
-
-    // 5. 가짜 반환 주소 쌓기
-    rsp -= sizeof(void *);
-    *((void **) rsp) = NULL;
-
-    // 모든 작업이 끝난 후의 rsp 값을 intr_frame에 최종 설정
-    _if.rsp = (uint64_t) rsp;
-
-	// // argc 값을 rdi에 설정
-	_if.R.rdi = argc;
-	
+	user_stack_build(&_if, argc, argv_temp);
 	palloc_free_page(copy_name);
 
 	// printf("--- Stack Dump for %s ---\n", argv_temp[0]);
