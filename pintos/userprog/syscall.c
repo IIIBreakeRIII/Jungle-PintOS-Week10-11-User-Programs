@@ -12,6 +12,7 @@
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 bool is_valid_user_buffer(void *buffer, unsigned size);
+void sys_exit(int status);
 
 /*
 	사용자 프로세스가 커널 기능에 접근하고자 할 때마다 시스템 콜을 호출합니다. 
@@ -55,10 +56,7 @@ syscall_handler (struct intr_frame *f UNUSED) {
             break;
         case SYS_EXIT:
 			int status = f->R.rdi;
-			struct thread* cur_thread = thread_current();
-			cur_thread->exit_status = status;
-			printf("%s: exit(%d)\n", cur_thread->name, status);
-			thread_exit();
+			sys_exit(status);
             break;
         case SYS_WRITE:  
             // 이 안에 `write` 시스템 콜의 상세 기능을 구현합니다.
@@ -66,17 +64,8 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			int fd = f->R.rdi;
 			void* buffer = f->R.rsi;
 			unsigned size = f->R.rdx;
+			sys_write(fd, buffer, size);
 			
-            // 2. buffer 포인터가 유효한지 검사합니다.			
-			// 3. fd가 1(콘솔 출력)인지, 일반 파일인지 구분합니다.
-			if (is_valid_user_buffer(buffer, size)) {
-				if (fd == 1) {
-					putbuf(buffer, size);
-					f->R.rax = size;
-				} else {
-					thread_exit();
-				}
-			}
             break;
         default:
             break;
@@ -85,6 +74,23 @@ syscall_handler (struct intr_frame *f UNUSED) {
 	// thread_exit ();
 }
 
+void sys_write(int fd, void* buffer, unsigned size) {
+	if (is_valid_user_buffer(buffer, size)) {
+		if (fd == 1) {
+			putbuf(buffer, size);
+			// f->R.rax = size;
+		} else {
+			thread_exit();
+		}
+	}
+}
+
+void sys_exit(int status) {
+	struct thread* cur_thread = thread_current();
+	cur_thread->exit_status = status;
+	printf("%s: exit(%d)\n", cur_thread->name, status);
+	thread_exit();
+}
 
 // buffer부터 size 바이트까지의 모든 주소가 유효한지 확인하는 함수
 bool is_valid_user_buffer(void *buffer, unsigned size) {
