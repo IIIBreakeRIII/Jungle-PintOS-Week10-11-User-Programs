@@ -8,6 +8,7 @@
 #include "threads/flags.h"
 #include "intrinsic.h"
 #include "include/lib/kernel/stdio.h"
+#include "include/threads/init.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
@@ -53,6 +54,7 @@ syscall_handler (struct intr_frame *f UNUSED) {
 	// TODO: Your implementation goes here.
 	switch (f->R.rax) {
         case SYS_HALT:
+			power_off();
             break;
         case SYS_EXIT:
 			int status = f->R.rdi;
