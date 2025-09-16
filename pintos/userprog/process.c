@@ -26,6 +26,7 @@ static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
+static void argument_stack(char **argv, int argc, struct intr_frame *_if);
 
 /* General process initializer for initd and other process. */
 static void
@@ -158,37 +159,114 @@ error:
 	thread_exit ();
 }
 
-/* Switch the current execution context to the f_name.
- * Returns -1 on fail. */
-int
-process_exec (void *f_name) {
+// Switch the current execution context to the f_name.
+// Returns -1 on fail.
+// 현재 실행 중인 컨텍스트를 f_name으로 전환
+int process_exec (void *f_name) {
 	char *file_name = f_name;
 	bool success;
 
-	/* We cannot use the intr_frame in the thread structure.
-	 * This is because when current thread rescheduled,
-	 * it stores the execution information to the member. */
+  // We cannot use the intr_frame in the thread structure.
+  // This is because when current thread rescheduled,
+  // it stores the execution information to the member.
+  // thread 구조체에 있는 intr_frame을 사용할 수 없음
 	struct intr_frame _if;
 	_if.ds = _if.es = _if.ss = SEL_UDSEG;
 	_if.cs = SEL_UCSEG;
 	_if.eflags = FLAG_IF | FLAG_MBS;
 
-	/* We first kill the current context */
+	// We first kill the current context
+  // 먼저 현재 컨텍스트를 제거
 	process_cleanup ();
 
-	/* And then load the binary */
-	success = load (file_name, &_if);
+  // param 저장할 배열 (64개로 제한)
+  char *argv[64];
+  int argc = 0;
+  char *token, *save_ptr;
 
-	/* If load failed, quit. */
+  // f_name 복사
+  char *f_name_cpy = palloc_get_page(0);
+  if (f_name_cpy == NULL) {
+    return -1;
+  }
+
+  strlcpy(f_name_cpy, f_name, PGSIZE);
+
+  // cpy본으로 파싱 진행
+  for (token = strtok_r(f_name_cpy, " ", &save_ptr); token != NULL; token = strtok_r(NULL, " ", &save_ptr)) {
+    argv[argc] = token;
+    argc++;
+  }
+
+	// And then load the binary
+  // 그리고 바이너리를 로드
+	// success = load (file_name, &_if);
+  // argv[0]으로 파일을 넘겨주기 위함
+  success = load(argv[0], &_if);
+  
+  // stack에 인자를 쌓는 함수 호출
+  argument_stack(argv, argc, &_if);
+  // argc를 %rdi 레지스터에 설정
+  _if.R.rdi = argc;
+  // argv의 시작 주소를 $rsi 레지스터에 설정
+  _if.R.rsi = (char *)_if.rsp + 8;
+  // 스택 내용을 확인하기 위한 hex_dump 호출
+  // hex_dump(_if.rsp, _if.rsp, USER_STACK - (uint64_t)_if.rsp, true);
+	hex_dump(_if.rsp, (const void *)_if.rsp, USER_STACK - _if.rsp, true);
+
+	// If load failed, quit.
+  // 로드에 실패하면 종료
 	palloc_free_page (file_name);
 	if (!success)
 		return -1;
 
-	/* Start switched process. */
+	// Start switched process.
+  // 전환된 프로세스를 시작
 	do_iret (&_if);
 	NOT_REACHED ();
 }
 
+static void argument_stack(char **argv, int argc, struct intr_frame *_if) {
+  uint8_t *sp = (uint8_t *) _if->rsp;   // 스택 포인터를 바이트 포인터로
+
+  // 문자열들 복사: 뒤에서부터
+  char *argv_addrs[64];                 // (argc 최대치에 맞춰 조정)
+  for (int i = argc - 1; i >= 0; i--) {
+    size_t len = strlen(argv[i]) + 1;   // ✅ len 선언
+    sp -= len;
+    memcpy(sp, argv[i], len);
+    argv_addrs[i] = (char *)sp;
+  }
+
+  // 8바이트 워드 정렬
+  size_t pad = ((uintptr_t)sp) % 8;
+  if (pad != 0) {
+    sp -= pad;
+    memset(sp, 0, pad);
+  }
+
+  // argv[argc] = NULL
+  sp -= sizeof(char *);
+  memset(sp, 0, sizeof(char *));
+
+  // argv 포인터들 push (역순으로)
+  for (int i = argc - 1; i >= 0; i--) {
+    sp -= sizeof(char *);
+    memcpy(sp, &argv_addrs[i], sizeof(char *));
+  }
+
+  // argv (char **)
+  char **argv_on_stack = (char **)sp;
+
+  // fake return address
+  sp -= sizeof(void *);
+  memset(sp, 0, sizeof(void *));
+
+  // 레지스터/스택 최종 세팅
+  _if->R.rdi = argc;                          // 첫 번째 인자: argc
+  _if->R.rsi = (uint64_t)argv_on_stack;       // 두 번째 인자: argv
+  _if->rsp   = (uintptr_t)sp;                 // 갱신된 스택 포인터
+}
 
 /* Waits for thread TID to die and returns its exit status.  If
  * it was terminated by the kernel (i.e. killed due to an
@@ -204,6 +282,10 @@ process_wait (tid_t child_tid UNUSED) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
+  for (int i = 0; i < 100000000; i++) {
+
+  }
+
 	return -1;
 }
 
