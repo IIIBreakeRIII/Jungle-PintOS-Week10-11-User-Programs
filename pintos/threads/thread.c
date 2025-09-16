@@ -233,6 +233,7 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   t->tf.eflags = FLAG_IF;
   t->exit_status = 0;
 
+ 
 
   /* Add to run queue. */
   thread_unblock(t);
@@ -558,7 +559,6 @@ static void init_thread(struct thread *t, const char *name, int priority) {
   ASSERT(t != NULL);
   ASSERT(PRI_MIN <= priority && priority <= PRI_MAX);
   ASSERT(name != NULL);
-
   memset(t, 0, sizeof *t);
   
   t->status = THREAD_BLOCKED;
@@ -573,16 +573,16 @@ static void init_thread(struct thread *t, const char *name, int priority) {
   list_init(&t->acquired_locks);
   t->waiting_for_lock = NULL;
   t->is_donated = 0;
-
+  
+  /* mlfqs 멤버 초기화 */
+  t->nice = 0;
+  t->recent_cpu = INT_TO_FP(0);
+  
   #ifdef USERPROG
     list_init(&t->child_list);
     sema_init(&t->wait_sema, 0); // 세마 초기화
     t->exit_status = 0;
   #endif
-
-  /* mlfqs 멤버 초기화 */
-  t->nice = 0;
-  t->recent_cpu = INT_TO_FP(0);
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -783,6 +783,27 @@ struct list *get_ready_list(void) {
 }
 struct list *get_sleep_list(void) {
   return &sleep_list;
+}
+
+struct list* get_all_list(void) {
+  return &all_list;
+}
+
+struct thread* get_thread_by_tid(tid_t tid) {
+  // 1. all_list를 순회하기 위한 for 루프를 만듭니다.
+  // 2. 루프 안에서, list_entry 매크로를 사용하여 list_elem으로부터 struct thread 포인터를 얻어냅니다.
+  // 3. if 문을 사용해, 지금 찾은 스레드 t의 tid가 우리가 찾고 있는 tid와 일치하는지 비교합니다.
+  // 4. 만약 일치한다면, 찾았으므로 해당 스레드의 포인터 t를 return 하고 함수를 즉시 종료합니다.
+  // 5. for 루프가 끝날 때까지 일치하는 스레드를 찾지 못했다면, 해당하는 스레드가 없다는 뜻이므로 함수 마지막에 NULL을 return 합니다.
+  struct list_elem* e;
+
+  for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e)) {
+    struct thread* find_thread = list_entry(e, struct thread, all_elem);
+    if (find_thread->tid == tid) {
+      return find_thread;
+    }
+  }
+  return NULL;
 }
 
 bool thread_priority_less(const struct list_elem *a, const struct list_elem *b, void *aux) {

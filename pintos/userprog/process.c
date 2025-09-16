@@ -24,10 +24,13 @@
 #include "vm/vm.h"
 #endif
 
+#define MAX_BUFFER_SIZE 128
+
 static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
+void user_stack_build(struct intr_frame* _if, int argc, char* argv_temp);
 
 
 // ELF 바이너리를 로드하고 프로세스를 시작합니다.
@@ -59,6 +62,16 @@ process_create_initd (const char *file_name) {
 	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
 	if (tid == TID_ERROR)
 		palloc_free_page (fn_copy);
+	
+	struct thread* current_thread = thread_current();
+	struct thread* child_thread = get_thread_by_tid(tid);
+
+    if (child_thread == NULL) {
+        palloc_free_page(fn_copy);
+        return TID_ERROR;
+    }
+	list_push_back(&current_thread->child_list, &child_thread->child_elem);
+	
 	return tid;
 }
 
@@ -81,8 +94,7 @@ initd (void *f_name) {
 tid_t
 process_fork (const char *name, struct intr_frame *if_ UNUSED) {
 	/* Clone current thread to new thread.*/
-	return thread_create (name,
-			PRI_DEFAULT, __do_fork, thread_current ());
+	return thread_create (name, PRI_DEFAULT, __do_fork, thread_current ());
 }
 
 #ifndef VM
@@ -162,24 +174,57 @@ error:
 	thread_exit ();
 }
 
+void user_stack_build(struct intr_frame* _if, int argc, char* argv_temp) {
+	 // --- 올바른 스택 조립 순서 ---
+
+    void* rsp = (void*) _if->rsp; // USER_STACK에서 시작
+    char* argv_addrs[argc];
+
+    // 1. 문자열 데이터 쌓기 (이 부분은 정확합니다)
+    for (int i = argc - 1; i >= 0; i--) {
+        int arg_len = strlen(argv_temp[i]) + 1;
+        rsp -= arg_len;
+        memcpy(rsp, argv_temp[i], arg_len);
+        argv_addrs[i] = rsp;
+    }
+
+    // 2. 워드 정렬 패딩 쌓기 (문자열 다음, 주소 이전)
+    int padding = (uintptr_t) rsp % 8;
+    if (padding != 0) {
+        rsp -= padding;
+        memset(rsp, 0, padding);
+    }
+
+    // 3. NULL 포인터 센티널 쌓기 (argv[argc])
+    rsp -= sizeof(char *);
+    *((char **) rsp) = NULL;
+
+    // 4. 문자열 주소(포인터) 쌓기
+    for (int i = argc - 1; i >= 0; i--) {
+        rsp -= sizeof(char *);
+        *((char **) rsp) = argv_addrs[i];
+    }
+
+    // --- 최종 intr_frame 설정 ---
+    
+    // 이제 rsp는 argv 배열의 시작 주소를 가리킴. 이 값을 rsi에 설정.
+	_if->R.rsi = (uint64_t) rsp;
+    // argc 값을 rdi에 설정
+    _if->R.rdi = argc;
+
+    // 5. 가짜 반환 주소 쌓기
+    rsp -= sizeof(void *);
+    *((void **) rsp) = NULL;
+
+    // 모든 작업이 끝난 후의 rsp 값을 intr_frame에 최종 설정
+    _if->rsp = (uint64_t) rsp;
+}
+
+
 /* Switch the current execution context to the f_name.
  * Returns -1 on fail. */
-int
-process_exec (void *f_name) {
-	char *file_name = f_name;
-	char *save_ptr;
-	char *delim = " ";
-	char *argv_temp[128];
-	int argc = 0;
 
-	char* copy_name = palloc_get_page(PAL_ZERO);
-	if (copy_name == NULL) {
-		return -1;
-	}
-	strlcpy(copy_name, f_name, PGSIZE);
-	argv_temp[argc] = strtok_r(copy_name, delim, &save_ptr);
-
-	/* 
+ /* 
 	1. 변수 준비: 인자의 개수(argc)와, 스택에 저장될 문자열들의 주소를 잠시 담아둘 argv_addrs 배열을 준비합니다.
 	2. 문자열 데이터 쌓기: USER_STACK 꼭대기부터 시작해서, argv_temp에 있던 실제 문자열들("ls", "-l" 등)을 스택에 복사합니다. 
 	복사할 때마다 스택 포인터(rsp)를 문자열 길이만큼 아래로 내리고, 복사된 위치의 주소를 argv_addrs에 기록합니다.
@@ -189,6 +234,29 @@ process_exec (void *f_name) {
 	마지막으로 가짜 반환 주소를 쌓습니다.
 	6. 최종 rsp 설정: 모든 짐을 다 실은 후의 마지막 위치를 실제 스택 포인터로 _if.rsp에 설정합니다.
 	*/
+int
+process_exec (void *f_name) {
+	char *file_name = f_name;
+	char *save_ptr;
+	char *delim = " ";
+	char *argv_temp[MAX_BUFFER_SIZE];
+	int argc = 0;
+
+	char* copy_name = palloc_get_page(PAL_ZERO);
+	if (copy_name == NULL) {
+		return -1;
+	}
+	strlcpy(copy_name, f_name, PGSIZE);
+	argv_temp[argc] = strtok_r(copy_name, delim, &save_ptr);
+
+	/* And then load the binary */
+	while (argv_temp[argc] != NULL) {
+		argc++;
+		argv_temp[argc] = strtok_r(NULL, delim, &save_ptr);
+	}
+
+	strlcpy(thread_current()->name, argv_temp[0], strlen(argv_temp[0]) + 1);
+
 	bool success;
 
 	/* We cannot use the intr_frame in the thread structure.
@@ -202,14 +270,6 @@ process_exec (void *f_name) {
 	/* We first kill the current context */
 	process_cleanup(); // 기존 프로세스의 흔적을 지움
 
-	/* And then load the binary */
-	while (argv_temp[argc] != NULL) {
-		argc++;
-		argv_temp[argc] = strtok_r(NULL, delim, &save_ptr);
-	}
-
-	// argc 값을 rdi에 설정
-	_if.R.rdi = argc;
 	/* If load failed, quit. */
 	success = load (argv_temp[0], &_if); // 새로운 프로그램을 메모리에 적재함
 
@@ -218,53 +278,56 @@ process_exec (void *f_name) {
 		return -1;
 	}
 
-	void* rsp = (void*) _if.rsp;
-	char* argv_addrs[argc];
+	void* rsp = (void*) _if.rsp; // USER_STACK에서 시작
+    char* argv_addrs[argc];
 
-	// 3. 워드 정렬 (Word Align)
-	// rsp를 8의 배수로 맞추기 위해 패딩(padding)을 추가
-	int padding = (uintptr_t) rsp % 8;
-	if (padding != 0) {
-		rsp -= padding;
-		memset(rsp, 0, padding); // 빈 공간을 0으로 채움
-	}
+    // 1. 문자열 데이터 쌓기 (이 부분은 정확합니다)
+    for (int i = argc - 1; i >= 0; i--) {
+        int arg_len = strlen(argv_temp[i]) + 1;
+        rsp -= arg_len;
+        memcpy(rsp, argv_temp[i], arg_len);
+        argv_addrs[i] = rsp;
+    }
 
-	
-	for (int i = argc - 1; i >= 0; i--) {
-		int arg_len = strlen(argv_temp[i]) + 1; // 널 종단 문자 포함 길이
-    	rsp -= arg_len; // 스택 포인터를 문자열 길이만큼 내림
-    	memcpy(rsp, argv_temp[i], arg_len); // 해당 위치에 문자열 복사
-    	argv_addrs[i] = rsp; // 복사된 문자열의 주소를 기록
-	}
+    // 2. 워드 정렬 패딩 쌓기 (문자열 다음, 주소 이전)
+    int padding = (uintptr_t) rsp % 8;
+    if (padding != 0) {
+        rsp -= padding;
+        memset(rsp, 0, padding);
+    }
 
-	// 4. 문자열 주소(포인터) 쌓기
-	// argv 배열의 끝을 알리는 NULL 포인터 추가
-	rsp -= sizeof(char *);
-	*((char **) rsp) = NULL;
+    // 3. NULL 포인터 센티널 쌓기 (argv[argc])
+    rsp -= sizeof(char *);
+    *((char **) rsp) = NULL;
 
-	// 기록해둔 문자열 주소들을 끝에서부터(argc-1) 스택에 추가
-	for (int i = argc - 1; i >= 0; i--) {
-		rsp -= sizeof(char *);
-		*((char **) rsp) = argv_addrs[i];
-	}
+    // 4. 문자열 주소(포인터) 쌓기
+    for (int i = argc - 1; i >= 0; i--) {
+        rsp -= sizeof(char *);
+        *((char **) rsp) = argv_addrs[i];
+    }
 
-	// 5. 최종 인자 및 가짜 반환 주소 쌓기
-	// 이제 rsp는 argv 배열의 시작 주소를 가리킴. 이 값을 rsi에 설정.
-	_if.R.rsi = (uint64_t) rsp; 
+    // --- 최종 intr_frame 설정 ---
+    
+    // 이제 rsp는 argv 배열의 시작 주소를 가리킴. 이 값을 rsi에 설정.
+	_if.R.rsi = (uint64_t) rsp;
+    // argc 값을 rdi에 설정
+    _if.R.rdi = argc;
 
-	// 가짜 반환 주소(0)를 추가
-	rsp -= sizeof(void *);
-	*((void **) rsp) = NULL;
+    // 5. 가짜 반환 주소 쌓기
+    rsp -= sizeof(void *);
+    *((void **) rsp) = NULL;
 
-	// 6. 최종 rsp 설정
-	// 모든 작업이 끝난 후의 rsp 값을 intr_frame에 최종 설정
-	_if.rsp = (uint64_t) rsp;
+    // 모든 작업이 끝난 후의 rsp 값을 intr_frame에 최종 설정
+    _if.rsp = (uint64_t) rsp;
+
+	// // argc 값을 rdi에 설정
+	_if.R.rdi = argc;
 	
 	palloc_free_page(copy_name);
 
-	printf("--- Stack Dump for %s ---\n", argv_temp[0]);
-    hex_dump(_if.rsp, (void *)_if.rsp, USER_STACK - _if.rsp, true);
-    printf("--- Stack Dump End ---\n");
+	// printf("--- Stack Dump for %s ---\n", argv_temp[0]);
+    // hex_dump(_if.rsp, (void *)_if.rsp, USER_STACK - _if.rsp, true);
+    // printf("--- Stack Dump End ---\n");
 
 	/* Start switched process. */
 	do_iret (&_if); //역할: 새로운 프로그램으로 제어권을 넘기는 최종 스위치
@@ -440,7 +503,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	process_activate (thread_current ());
 
 	/* Open executable file. */
-	file = filesys_open (file_name);
+	file = filesys_open(file_name);
 	if (file == NULL) {
 		printf ("load: %s: open failed\n", file_name);
 		goto done;
