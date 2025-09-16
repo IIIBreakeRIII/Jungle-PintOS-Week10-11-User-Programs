@@ -322,27 +322,46 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
  * Returns true if successful, false otherwise. */
 static bool
 load (const char *file_name, struct intr_frame *if_) {
-	struct thread *t = thread_current ();
+	struct thread *t = thread_current ();		// 현재 실행 중인 스레드
 	struct ELF ehdr;
 	struct file *file = NULL;
 	off_t file_ofs;
 	bool success = false;
 	int i;
 
-	/* Allocate and activate page directory. */
+	char *token, *save_ptr;		// strtok_r() 함수를 위한 포인터 변수
+
+	/* 페이지 디렉터리를 할당하고 활성화한다. */
 	t->pml4 = pml4_create ();
 	if (t->pml4 == NULL)
 		goto done;
 	process_activate (thread_current ());
 
-	/* Open executable file. */
-	file = filesys_open (file_name);
+	/* 명령문 사본 생성1, 제목 추출용 */
+	char *cmd_copied1 = malloc(sizeof(char) * (strlen(file_name) + 1));	// '\0' 공간 +1
+	strlcpy(cmd_copied1, file_name, strlen(file_name) + 1);
+
+	/* 명령문 사본 생성2, argc 계산용 */
+	char *cmd_copied2 = malloc(sizeof(char) * (strlen(file_name) + 1));	// '\0' 공간 +1
+	strlcpy(cmd_copied2, file_name, strlen(file_name) + 1);
+
+	/* 명령문 사본 생성3, argv용 */
+	char *cmd_copied3 = malloc(sizeof(char) * (strlen(file_name) + 1));	// '\0' 공간 +1
+	strlcpy(cmd_copied3, file_name, strlen(file_name) + 1);
+
+	/* file명만 추출 */
+	if ((token = strtok_r(cmd_copied1, " ", &save_ptr)) == NULL)
+		goto done;
+	char *fn_copied = malloc(sizeof(char) * (strlen(token)+1));	//file_name copied
+	strlcpy(fn_copied, token, strlen(token)+1); 
+
+	file = filesys_open (fn_copied);
 	if (file == NULL) {
-		printf ("load: %s: open failed\n", file_name);
+		printf ("load: %s: open failed\n", fn_copied);
 		goto done;
 	}
 
-	/* Read and verify executable header. */
+	/* 실행 파일 헤더를 읽고 검증한다. */
 	if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
 			|| memcmp (ehdr.e_ident, "\177ELF\2\1\1", 7)
 			|| ehdr.e_type != 2
@@ -354,7 +373,7 @@ load (const char *file_name, struct intr_frame *if_) {
 		goto done;
 	}
 
-	/* Read program headers. */
+	/* 프로그램 헤더를 읽는다. */
 	file_ofs = ehdr.e_phoff;
 	for (i = 0; i < ehdr.e_phnum; i++) {
 		struct Phdr phdr;
@@ -406,22 +425,73 @@ load (const char *file_name, struct intr_frame *if_) {
 				break;
 		}
 	}
-
+	
 	/* Set up stack. */
-	if (!setup_stack (if_))
+	if (!setup_stack (if_))		// if_->rsp = USER_STACK, RSP(스택 포인터) 초기화
 		goto done;
 
 	/* Start address. */
-	if_->rip = ehdr.e_entry;
+	if_->rip = ehdr.e_entry;	// if_->rip = edhr.e_entry, 다음에 실행할 명령 주소 초기화
 
-	/* TODO: Your code goes here.
-	 * TODO: Implement argument passing (see project2/argument_passing.html). */
+	/* Argument Passing */
+
+	// argc
+	int argc = 0;
+	for (token = strtok_r(cmd_copied2, " ", &save_ptr);
+		 token != NULL;
+		 token = strtok_r(NULL, " ", &save_ptr))
+	{
+		argc++;
+	}
+	if_->R.rdi = argc;		// RDI 레지스터에 argc 값 저장
+
+	// argv 
+	char **argv = malloc(sizeof(char *) * (argc + 1));	// 동적 할당으로 argc + 1(센티널) 크기의 포인터 배열 생성
+	int idx = 0;
+	for (token = strtok_r(cmd_copied3, " ", &save_ptr);
+		 token != NULL;
+		 token = strtok_r(NULL, " ", &save_ptr))
+	{
+		if_->rsp -= (sizeof(char) * (strlen(token)+1));		// '\0'를 포함한 문자열 복사 공간 확보, 스택 포인터 이동
+		strlcpy(if_->rsp, token, strlen(token)+1);			// 스택 최상단에 문자열 복사, strlcpy <- 널 종료 보장
+		argv[idx++] = if_->rsp;								// 문자열 주소 저장
+	}
+	argv[idx] = NULL;		// 센티널용, argv[argc]
+	
+	// Word_align Padding
+	int misalign = if_->rsp % 8;
+	for(;misalign > 0;misalign--) {
+		if_->rsp -= sizeof(uint8_t);
+		*(uint8_t *)if_->rsp = 0;
+	}
+
+	// 유저 스택에 argv[idx] 포인터 push
+	for (;idx >= 0;idx--)
+	{
+		if_->rsp -= (sizeof(char *));	// 문자열 주소 저장할 공간 확보
+		memcpy(if_->rsp, &argv[idx], sizeof(char *));
+	}
+	if_->R.rsi = if_->rsp;				// RSI 레지스터에 argv[0] 주소 저장
+
+	// 유저 스택에 return adress(가짜) 저장(push)
+	if_->rsp -= (sizeof(void (*)()));
+	*(void **)if_->rsp = NULL;
+
+	/* Argument Passing 종료 */
 
 	success = true;
 
 done:
 	/* We arrive here whether the load is successful or not. */
 	file_close (file);
+
+	// 사용한 메모리 해제
+	free(argv);
+	free(fn_copied);
+	free(cmd_copied1);
+	free(cmd_copied2);
+	free(cmd_copied3);
+
 	return success;
 }
 
