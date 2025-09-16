@@ -55,8 +55,9 @@ syscall_handler (struct intr_frame *f UNUSED) {
             break;
         case SYS_EXIT:
 			int status = f->R.rdi;
-			thread_current()->exit_status = status;
-			printf("%s: exit(%d)\n", thread_current()->name, status);
+			struct thread* cur_thread = thread_current();
+			cur_thread->exit_status = status;
+			printf("%s: exit(%d)\n", cur_thread->name, status);
 			thread_exit();
             break;
         case SYS_WRITE:  
@@ -68,15 +69,13 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			
             // 2. buffer 포인터가 유효한지 검사합니다.			
 			// 3. fd가 1(콘솔 출력)인지, 일반 파일인지 구분합니다.
-			if (fd == 1) {
-				if (is_valid_user_buffer(buffer, size)) {
+			if (is_valid_user_buffer(buffer, size)) {
+				if (fd == 1) {
 					putbuf(buffer, size);
 					f->R.rax = size;
+				} else {
+					thread_exit();
 				}
-			} else {
-				// 4. 각 상황에 맞게 데이터를 씁니다.
-				// 5. 쓴 바이트 수를 f->R.rax에 저장해서 반환합니다.
-				f->R.rax;
 			}
             break;
         default:

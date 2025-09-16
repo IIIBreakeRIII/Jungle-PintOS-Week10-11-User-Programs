@@ -179,5 +179,6 @@ void mlfqs_update_priority(struct thread *t);
 bool thread_priority_less(const struct list_elem *, const struct list_elem *, void *);
 bool is_not_idle(struct thread *);
 int max_priority_mlfqs_queue(void);
+struct thread *get_thread_by_tid (tid_t tid);
 
 #endif /* threads/thread.h */
