@@ -178,7 +178,7 @@ void user_stack_build(struct intr_frame* if_, int argc, char* argv_temp[]) {
 	void* rsp = (void*) if_->rsp; // USER_STACK에서 시작
     char* argv_addrs[argc];
 
-    // 1. 문자열 데이터 쌓기 (이 부분은 정확합니다)
+    // 1. 문자열 데이터 쌓기
     for (int i = argc - 1; i >= 0; i--) {
         int arg_len = strlen(argv_temp[i]) + 1;
         rsp -= arg_len;
@@ -304,28 +304,17 @@ process_wait (tid_t child_tid UNUSED) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
-	struct thread* parent = thread_current();
-	struct list_elem* e;
-	struct thread* find_thread = NULL;
-
-	for (e = list_begin(&parent->child_list); e != list_end(&parent->child_list); e = list_next(e)) {
-		struct thread* child = list_entry(e, struct thread, child_elem);
-		if (child->tid == child_tid) {
-			find_thread = child;
-			break;
-		}
-	}
-
-	if (find_thread == NULL) {
+	struct thread* child_thread = get_thread_by_tid(child_tid);
+	if (child_thread == NULL) {
 		return -1;
 	}
 
 	// 찾은 자식 스레드의 세마포어에 sema_down() 호출
-	sema_down(&find_thread->wait_sema);
-	int status = find_thread->exit_status;
+	sema_down(&child_thread->wait_sema);
+	int status = child_thread->exit_status;
 	// wait가 끝난 자식은 부모의 목록에서 제거 list_remove()
-	list_remove(&find_thread->child_elem);
-	palloc_free_page(find_thread);
+	list_remove(&child_thread->child_elem);
+	palloc_free_page(child_thread);
 
 	return status;
 }
