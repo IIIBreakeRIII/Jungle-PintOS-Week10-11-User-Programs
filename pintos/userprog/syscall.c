@@ -68,39 +68,25 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			sys_write(fd, buffer, size);
             break;
 		case SYS_CREATE:
-			/*
-				1. 인자가져오기
-				intr_frame에서 첫 번째 인자인 const char *file (파일 이름이 담긴 주소)을 가져옵니다. 이 값은 %rdi 레지스터에 있습니다.
-				2. 포인터 유효성 검사 (매우 중요)
-				사용자 프로그램이 전달한 file 포인터가 유효한 주소인지 반드시 검사해야 합니다.
-				이전에 만드신 is_valid_user_buffer와 같은 헬퍼 함수를 사용해, 주소가 NULL은 아닌지, 
-				커널 영역을 침범하지는 않는지, 실제로 할당된 메모리가 맞는지 확인해야 합니다.
-				유효하지 않다면, 즉시 프로세스를 종료시키거나(exit(-1)) 에러를 반환해야 합니다.
-				3. 동기화: 락(Lock) 획득
-				파일 시스템에 접근하는 것은 여러 프로세스가 동시에 할 수 없는 **임계 구역(Critical Section)**입니다.
-				실제 파일을 열기 전에, 파일 시스템 접근을 보호하는 전역 락(lock)을 반드시 획득해야 합니다.
-				4. 실제 파일 열기
-				filesys/filesys.h에 선언된 filesys_open(file) 함수를 호출하여 실제 파일 열기를 시도합니다.
-				이 함수는 성공 시 struct file 포인터를, 실패 시 NULL을 반환합니다.
-				5. 파일 디스크립터 할당
-				filesys_open이 성공하여 struct file 포인터를 받았다면, 이제 이 파일 객체를 현재 프로세스의 파일 디스크립터 테이블에 등록해야 합니다.
-				struct thread 안에 struct file **fd_table;과 같은 배열을 만들어 관리합니다.
-				테이블의 비어있는 가장 낮은 번호(2번부터 시작)를 찾아, 그 위치에 방금 받은 struct file 포인터를 저장합니다.
-				이때 찾은 배열의 인덱스 번호가 바로 사용자 프로그램에게 돌려줄 **파일 디스크립터(fd)**가 됩니다.
-				6. 동기화: 락(Lock) 해제
-				파일 시스템 작업이 모두 끝났으므로, 3번에서 획득했던 락을 반드시 해제해야 합니다.
-				7. 결과 반환
-				성공 시: 5번에서 할당한 파일 디스크립터(fd) 번호를 intr_frame의 rax 레지스터에 저장합니다.
-				실패 시 (filesys_open이 NULL을 반환했거나, 파일 디스크립터 테이블이 꽉 찼을 경우): **-1**을 rax 레지스터에 저장합니다. 
-			*/
 			char* file_name = f->R.rdi;
-			is_valid_user_buffer(file_name, sizeof(file_name));
-			struct thread* current_thread = thread_current();
-			// lock_acquire(current_thread->acquired_locks);
-			struct file* file = filesys_open(file_name);
-			
-			// lock_release(current_thread->acquired_locks);
-			// f->R.rax = ;
+			unsigned file_size = f->R.rsi;
+
+			// 1. 포인터 유효성 검사
+			if (!is_valid_user_buffer(file_name, file_size)) {
+				thread_exit();
+			}
+
+			// 2. 동기화 락 획득 - 다른 스레드 및 프로세스가 접근 불가능한 임계구역 설정
+			lock_acquire(&filesys_lock);
+
+			// 3. 실제 파일 만들기
+			bool sucess = filesys_create(file_name, file_size);
+			f->R.rax = sucess;
+
+			// 4. 락 동기화 해제
+			lock_release(&filesys_lock);
+			break;
+		case SYS_OPEN:
 			break;
         default:
             break;
