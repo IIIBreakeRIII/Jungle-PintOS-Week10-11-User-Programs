@@ -101,7 +101,7 @@ int sys_open(struct intr_frame* f UNUSED) {
 	// 4. 파일 디스크립터 할당
 	if (file_obj == NULL) {
 		lock_release(&filesys_lock);
-		return 2;
+		return -1;
 	}
 	int fd = -1;
 	#ifdef USERPROG
@@ -172,17 +172,24 @@ bool is_valid_user_string(char* user_string) {
 
 	// 2. 커널 버퍼 준비: palloc_get_page나 char kernel_buffer[128] 등으로 커널 메모리에 임시 버퍼를 하나 만듭니다.
 	char kernal_buffer[MAX_BUFFER_SIZE];
-	int i = 0;
 
 	// 3. 한 바이트씩 안전하게 복사:
-	while (user_string[i] != '\0') {
+	for (int i = 0; i < MAX_BUFFER_SIZE ; i++) {
 		char* current_char_addr = user_string + i;
 		if (!is_user_vaddr(current_char_addr) || pml4_get_page(thread_current()->pml4, current_char_addr) == NULL) {
-            return false;
+			return false;
+		}
+
+		if (current_char_addr == '\0') {
+            return true;
         }
 		kernal_buffer[i] = user_string[i];
-		i++;
+		
+		if (i > 4096) { // PGSIZE
+            return false;
+        }
 	}
+
 
 	return true;
 }
