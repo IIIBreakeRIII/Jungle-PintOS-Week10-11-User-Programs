@@ -73,7 +73,8 @@ syscall_handler (struct intr_frame *f UNUSED) {
 
 			// 1. 포인터 유효성 검사
 			if (!is_valid_user_buffer(file_name, file_size)) {
-				thread_exit();
+				sys_exit(-1);
+				// thread_exit();
 			}
 
 			// 2. 동기화 락 획득 - 다른 스레드 및 프로세스가 접근 불가능한 임계구역 설정
