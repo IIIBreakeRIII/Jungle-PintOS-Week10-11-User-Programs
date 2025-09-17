@@ -25,6 +25,7 @@ Makefile.userprog
 core
 *.json
 
+**/tests/
 
 usertests
 select_test.sh
