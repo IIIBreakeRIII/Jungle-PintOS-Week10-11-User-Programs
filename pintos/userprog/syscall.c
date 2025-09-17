@@ -11,10 +11,16 @@
 #include "include/threads/init.h"
 #include "include/filesys/filesys.h"
 
+#define EXIT_STATUS -1
+#define MAX_BUFFER_SIZE 128
+
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 bool is_valid_user_buffer(void *buffer, unsigned size);
 void sys_exit(int status);
+void sys_create(struct intr_frame *f UNUSED);
+void sys_write(struct intr_frame *f UNUSED);
+
 
 /*
 	사용자 프로세스가 커널 기능에 접근하고자 할 때마다 시스템 콜을 호출합니다. 
@@ -61,33 +67,14 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			int status = f->R.rdi;
 			sys_exit(status);
             break;
-        case SYS_WRITE:  
-			int fd = f->R.rdi;
-			void* buffer = f->R.rsi;
-			unsigned size = f->R.rdx;
-			sys_write(fd, buffer, size);
+        case SYS_WRITE:
+			sys_write(f);
             break;
 		case SYS_CREATE:
-			char* file_name = f->R.rdi;
-			unsigned file_size = f->R.rsi;
-
-			// 1. 포인터 유효성 검사
-			if (!is_valid_user_buffer(file_name, file_size)) {
-				sys_exit(-1);
-				// thread_exit();
-			}
-
-			// 2. 동기화 락 획득 - 다른 스레드 및 프로세스가 접근 불가능한 임계구역 설정
-			lock_acquire(&filesys_lock);
-
-			// 3. 실제 파일 만들기
-			bool sucess = filesys_create(file_name, file_size);
-			f->R.rax = sucess;
-
-			// 4. 락 동기화 해제
-			lock_release(&filesys_lock);
+			sys_create(f);
 			break;
 		case SYS_OPEN:
+			sys_open(f);
 			break;
         default:
             break;
@@ -96,14 +83,63 @@ syscall_handler (struct intr_frame *f UNUSED) {
 	// thread_exit ();
 }
 
-void sys_write(int fd, void* buffer, unsigned size) {
-	if (is_valid_user_buffer(buffer, size)) {
-		if (fd == 1) {
-			putbuf(buffer, size);
-			// f->R.rax = size;
-		} else {
-			thread_exit();
-		}
+void sys_open(struct intr_frame* f UNUSED) {
+	// 1. 인자가져오기
+	char* file_name = f->R.rdi;
+	struct thread* cur_thread = thread_current();
+
+	// 2. 포인터 유효성 검사
+	if (!is_valid_user_string(file_name)) {
+		sys_exit(EXIT_STATUS);
+	}
+
+	// 3. 파일 열기 (동기화 포함)
+	lock_acquire(&filesys_lock);
+	struct file* open_file = filesys_open(file_name);
+	// 4. 파일 디스크립터 할당
+
+
+
+	for (int i = 3; i < FD_MAX; i++) {
+	}
+
+
+
+	lock_release(&filesys_lock);
+	// 5. 결과 반환
+}
+
+void sys_create(struct intr_frame *f UNUSED) {
+	char* file_name = f->R.rdi;
+	unsigned file_size = f->R.rsi;
+
+	// 1. 포인터 유효성 검사
+	if (!is_valid_user_buffer(file_name, file_size)) {
+		sys_exit(EXIT_STATUS);
+	}
+
+	// 2. 동기화 락 획득 - 다른 스레드 및 프로세스가 접근 불가능한 임계구역 설정
+	lock_acquire(&filesys_lock);
+	// 3. 실제 파일 만들기
+	bool sucess = filesys_create(file_name, file_size);
+	f->R.rax = sucess;
+	// 4. 락 동기화 해제
+	lock_release(&filesys_lock);
+}
+
+
+void sys_write(struct intr_frame *f UNUSED) {
+	int fd = f->R.rdi;
+	void* buffer = f->R.rsi;
+	unsigned size = f->R.rdx;
+
+	if (!is_valid_user_buffer(buffer, size)) {
+		sys_exit(EXIT_STATUS);
+	}
+
+	if (fd == 1) {
+		putbuf(buffer, size);
+		// f->R.rax = size;
 	}
 }
 
@@ -113,6 +149,34 @@ void sys_exit(int status) {
 	printf("%s: exit(%d)\n", cur_thread->name, status);
 	thread_exit();
 }
+
+bool is_valid_user_string(char* user_string) {
+
+	// 1. 시작 주소 기본 검사: 먼저 file 포인터 자체가 NULL이거나 사용자 영역을 벗어나는지 확인합니다.
+	if (user_string == NULL || !is_user_vaddr(user_string)) {
+		return false;
+	}
+
+	// 2. 커널 버퍼 준비: palloc_get_page나 char kernel_buffer[128] 등으로 커널 메모리에 임시 버퍼를 하나 만듭니다.
+	char kernal_buffer[MAX_BUFFER_SIZE];
+	int i = 0;
+
+	// 3. 한 바이트씩 안전하게 복사:
+	while (user_string[i] != '\0') {
+		char* current_char_addr = user_string + i;
+
+		if (!is_user_vaddr(current_char_addr) || pml4_get_page(thread_current()->pml4, current_char_addr) == NULL) {
+            return false;
+        }
+
+		kernal_buffer[i] = user_string[i];
+		i++;
+	}
+
+	return true;
+}
+
+
 
 // buffer부터 size 바이트까지의 모든 주소가 유효한지 확인하는 함수
 bool is_valid_user_buffer(void *buffer, unsigned size) {
