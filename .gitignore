@@ -37,3 +37,6 @@ select_test.sh
 .DS_Store
 
 .test_status
+
+# cache
+.cache/
