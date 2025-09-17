@@ -580,9 +580,6 @@ static void init_thread(struct thread *t, const char *name, int priority) {
     list_init(&t->child_list);
     sema_init(&t->wait_sema, 0); // 세마 초기화
     t->exit_status = 0;
-    for (int i = 0; i < FD_MAX; i++) {
-      t->fd_table[i] = NULL;
-    }
   #endif
 }
 

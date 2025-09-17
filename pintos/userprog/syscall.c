@@ -17,6 +17,7 @@
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 bool is_valid_user_buffer(void *buffer, unsigned size);
+bool is_valid_user_string(char* user_string);
 void sys_exit(int status);
 void sys_create(struct intr_frame *f UNUSED);
 void sys_write(struct intr_frame *f UNUSED);
@@ -74,7 +75,7 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			sys_create(f);
 			break;
 		case SYS_OPEN:
-			sys_open(f);
+			f->R.rax = sys_open(f);
 			break;
         default:
             break;
@@ -83,7 +84,7 @@ syscall_handler (struct intr_frame *f UNUSED) {
 	// thread_exit ();
 }
 
-void sys_open(struct intr_frame* f UNUSED) {
+int sys_open(struct intr_frame* f UNUSED) {
 	// 1. 인자가져오기
 	char* file_name = f->R.rdi;
 	struct thread* cur_thread = thread_current();
@@ -95,18 +96,31 @@ void sys_open(struct intr_frame* f UNUSED) {
 
 	// 3. 파일 열기 (동기화 포함)
 	lock_acquire(&filesys_lock);
-	struct file* open_file = filesys_open(file_name);
+	struct file* file_obj = filesys_open(file_name);
+
 	// 4. 파일 디스크립터 할당
-
-
-
-	for (int i = 3; i < FD_MAX; i++) {
+	if (file_obj == NULL) {
+		lock_release(&filesys_lock);
+		return 2;
 	}
-
-
+	int fd = -1;
+	#ifdef USERPROG
+		for (int i = 3; i < FD_MAX; i++) {
+			if (cur_thread->fd_table[i] == NULL) {
+				cur_thread->fd_table[i] = file_obj;
+				fd = i;
+				break;
+			}
+		}
+	#endif
 
 	lock_release(&filesys_lock);
+
+	if (fd == -1) {
+        file_close(file_obj); // 열었던 파일도 다시 닫아줘야 함
+    }
 	// 5. 결과 반환
+	return fd;
 }
 
 void sys_create(struct intr_frame *f UNUSED) {
@@ -151,7 +165,6 @@ void sys_exit(int status) {
 }
 
 bool is_valid_user_string(char* user_string) {
-
 	// 1. 시작 주소 기본 검사: 먼저 file 포인터 자체가 NULL이거나 사용자 영역을 벗어나는지 확인합니다.
 	if (user_string == NULL || !is_user_vaddr(user_string)) {
 		return false;
@@ -164,11 +177,9 @@ bool is_valid_user_string(char* user_string) {
 	// 3. 한 바이트씩 안전하게 복사:
 	while (user_string[i] != '\0') {
 		char* current_char_addr = user_string + i;
-
 		if (!is_user_vaddr(current_char_addr) || pml4_get_page(thread_current()->pml4, current_char_addr) == NULL) {
             return false;
         }
-
 		kernal_buffer[i] = user_string[i];
 		i++;
 	}

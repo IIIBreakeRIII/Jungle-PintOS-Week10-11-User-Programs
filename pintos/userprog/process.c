@@ -39,6 +39,12 @@ void user_stack_build(struct intr_frame* if_, int argc, char* argv_temp[]);
 static void
 process_init (void) {
 	struct thread *current = thread_current ();
+	#ifdef USERPROG
+		current->fd_table = malloc(sizeof(struct file *) * FD_MAX);
+		for (int i = 0; i < FD_MAX; i++) {
+		current->fd_table[i] = NULL;
+		}
+	#endif
 }
 
 /* Starts the first userland program, called "initd", loaded from FILE_NAME.
@@ -327,7 +333,19 @@ process_exit (void) {
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
+	#ifdef USERPROG
+		/* 1. 열려있는 모든 파일들을 올바른 방법으로 닫기 */
+		for (int i = 0; i < FD_MAX; i++) {
+			if (curr->fd_table[i] != NULL) {
+				file_close(curr->fd_table[i]);
+			}
+		}
+
+		/* 2. fd_table 배열 자체의 메모리를 해제 */
+		free(curr->fd_table);
+	#endif
 	sema_up(&curr->wait_sema);
+	
 	process_cleanup ();
 }
 
