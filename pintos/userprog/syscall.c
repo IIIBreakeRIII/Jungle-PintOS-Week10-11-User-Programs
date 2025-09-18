@@ -19,9 +19,9 @@ void syscall_handler (struct intr_frame *);
 bool is_valid_user_buffer(void *buffer, unsigned size);
 bool is_valid_user_string(char* user_string);
 void sys_exit(int status);
-void sys_create(struct intr_frame *f UNUSED);
-void sys_write(struct intr_frame *f UNUSED);
-
+bool sys_create(struct intr_frame *f UNUSED);
+unsigned sys_write(struct intr_frame *f UNUSED);
+void sys_close(struct intr_frame* f UNUSED);
 
 /*
 	사용자 프로세스가 커널 기능에 접근하고자 할 때마다 시스템 콜을 호출합니다. 
@@ -69,19 +69,33 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			sys_exit(status);
             break;
         case SYS_WRITE:
-			sys_write(f);
+			f->R.rax = sys_write(f);
             break;
 		case SYS_CREATE:
-			sys_create(f);
+			f->R.rax = sys_create(f);
 			break;
 		case SYS_OPEN:
 			f->R.rax = sys_open(f);
 			break;
+		case SYS_CLOSE:
+			sys_close(f);
+			break;
         default:
             break;
     }
+}
 
-	// thread_exit ();
+void sys_close(struct intr_frame* f UNUSED) {
+	int fd = f->R.rdi;
+	struct thread* current_thread = thread_current();
+
+	#ifdef USERPROG
+		if (fd < 0 || fd >= FD_MAX || current_thread->fd_table[fd] == NULL) {
+			sys_exit(EXIT_STATUS);
+		}
+		current_thread->fd_table[fd] = NULL;
+		file_close(current_thread->fd_table[fd]);
+	#endif
 }
 
 int sys_open(struct intr_frame* f UNUSED) {
@@ -123,7 +137,7 @@ int sys_open(struct intr_frame* f UNUSED) {
 	return fd;
 }
 
-void sys_create(struct intr_frame *f UNUSED) {
+bool sys_create(struct intr_frame *f UNUSED) {
 	char* file_name = f->R.rdi;
 	unsigned file_size = f->R.rsi;
 
@@ -136,13 +150,13 @@ void sys_create(struct intr_frame *f UNUSED) {
 	lock_acquire(&filesys_lock);
 	// 3. 실제 파일 만들기
 	bool sucess = filesys_create(file_name, file_size);
-	f->R.rax = sucess;
 	// 4. 락 동기화 해제
 	lock_release(&filesys_lock);
+	return sucess;
 }
 
 
-void sys_write(struct intr_frame *f UNUSED) {
+unsigned sys_write(struct intr_frame *f UNUSED) {
 	int fd = f->R.rdi;
 	void* buffer = f->R.rsi;
 	unsigned size = f->R.rdx;
@@ -153,8 +167,9 @@ void sys_write(struct intr_frame *f UNUSED) {
 
 	if (fd == 1) {
 		putbuf(buffer, size);
-		// f->R.rax = size;
+		
 	}
+	return size;
 }
 
 void sys_exit(int status) {
