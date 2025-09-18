@@ -10,6 +10,10 @@
 #include "include/lib/kernel/stdio.h"
 #include "include/threads/init.h"
 #include "include/filesys/filesys.h"
+#include "include/filesys/file.h"
+#include "include/devices/input.h"
+#include "include/threads/malloc.h"
+#include "include/lib/string.h"
 
 #define EXIT_STATUS -1
 #define MAX_BUFFER_SIZE 128
@@ -22,6 +26,8 @@ void sys_exit(int status);
 bool sys_create(struct intr_frame *f UNUSED);
 unsigned sys_write(struct intr_frame *f UNUSED);
 void sys_close(struct intr_frame* f UNUSED);
+int sys_read(struct intr_frame* f UNUSED);
+bool is_invaild_fd(int fd);
 
 /*
 	사용자 프로세스가 커널 기능에 접근하고자 할 때마다 시스템 콜을 호출합니다. 
@@ -71,6 +77,13 @@ syscall_handler (struct intr_frame *f UNUSED) {
         case SYS_WRITE:
 			f->R.rax = sys_write(f);
             break;
+		case SYS_READ:
+			int value = sys_read(f);
+			if (value < 0) 
+				f->R.rax = 0;
+			else
+				f->R.rax = value;
+			break;
 		case SYS_CREATE:
 			f->R.rax = sys_create(f);
 			break;
@@ -80,9 +93,61 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_CLOSE:
 			sys_close(f);
 			break;
-        default:
-            break;
     }
+}
+
+int sys_read(struct intr_frame* f UNUSED) {
+	// 인자 가져오기
+	int fd = f->R.rdi;
+	void* buffer = f->R.rsi;
+	unsigned size = f->R.rdx;
+
+	if (!is_valid_user_buffer(buffer, size)) {
+        sys_exit(EXIT_STATUS);
+    }
+
+	struct thread* cur_thread = thread_current();
+	off_t bytes_read = 0;
+
+	// read 시스템 콜이 호출되면, 먼저 커널 공간에 임시 버퍼를 하나 만듭니다 (malloc 사용).
+	// file_read를 호출하여 파일의 내용을 이 커널의 임시 버퍼로 읽어옵니다.
+	// 읽기가 성공하면, 커널의 임시 버퍼에 있는 내용을 사용자 공간의 buffer로 복사해줍니다 (memcpy 사용).
+	// 마지막으로, 할당했던 커널의 임시 버퍼를 free 해줍니다.
+	lock_acquire(&filesys_lock);
+	#ifdef USERPROG
+		// fd 유효성 검사
+		if (is_invaild_fd(fd)) {
+			sys_exit(EXIT_STATUS);
+		}
+	
+		void *temp_buffer = malloc(size);
+		if (temp_buffer == NULL) {
+			lock_release(&filesys_lock); // 락을 잡았다면 풀어줘야 함
+			return -1; // 메모리 할당 실패
+		}
+		
+		struct file* file_obj = cur_thread->fd_table[fd];
+
+		// 실제 데이터 읽기
+		bytes_read = file_read(file_obj, temp_buffer, size);
+
+		if (bytes_read > 0) {
+			memcpy(buffer, temp_buffer, bytes_read);
+		}
+
+		// 임시 버퍼를 해제한다.
+		free(temp_buffer);
+
+	#endif
+	lock_release(&filesys_lock);
+
+	return bytes_read;
+}
+
+bool is_invaild_fd(int fd) {
+	#ifdef USERPROG
+		return fd < 0 || fd >= FD_MAX || thread_current()->fd_table[fd] == NULL;
+	#endif
 }
 
 void sys_close(struct intr_frame* f UNUSED) {
@@ -90,7 +155,7 @@ void sys_close(struct intr_frame* f UNUSED) {
 	struct thread* current_thread = thread_current();
 
 	#ifdef USERPROG
-		if (fd < 0 || fd >= FD_MAX || current_thread->fd_table[fd] == NULL) {
+		if (is_invaild_fd(fd)) {
 			sys_exit(EXIT_STATUS);
 		}
 		current_thread->fd_table[fd] = NULL;
@@ -205,10 +270,8 @@ bool is_valid_user_string(char* user_string) {
         }
 	}
 
-
 	return true;
 }
-
 
 
 // buffer부터 size 바이트까지의 모든 주소가 유효한지 확인하는 함수
