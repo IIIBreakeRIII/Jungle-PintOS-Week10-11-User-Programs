@@ -221,6 +221,11 @@ process_exec (void *f_name) {
 	void* rsp = (void*) _if.rsp;
 	char* argv_addrs[argc];
 
+	// 4. 문자열 주소(포인터) 쌓기
+	// argv 배열의 끝을 알리는 NULL 포인터 추가
+	rsp -= sizeof(char *);
+	*((char **) rsp) = NULL;
+
 	// 3. 워드 정렬 (Word Align)
 	// rsp를 8의 배수로 맞추기 위해 패딩(padding)을 추가
 	int padding = (uintptr_t) rsp % 8;
@@ -228,7 +233,6 @@ process_exec (void *f_name) {
 		rsp -= padding;
 		memset(rsp, 0, padding); // 빈 공간을 0으로 채움
 	}
-
 	
 	for (int i = argc - 1; i >= 0; i--) {
 		int arg_len = strlen(argv_temp[i]) + 1; // 널 종단 문자 포함 길이
@@ -236,11 +240,6 @@ process_exec (void *f_name) {
     	memcpy(rsp, argv_temp[i], arg_len); // 해당 위치에 문자열 복사
     	argv_addrs[i] = rsp; // 복사된 문자열의 주소를 기록
 	}
-
-	// 4. 문자열 주소(포인터) 쌓기
-	// argv 배열의 끝을 알리는 NULL 포인터 추가
-	rsp -= sizeof(char *);
-	*((char **) rsp) = NULL;
 
 	// 기록해둔 문자열 주소들을 끝에서부터(argc-1) 스택에 추가
 	for (int i = argc - 1; i >= 0; i--) {

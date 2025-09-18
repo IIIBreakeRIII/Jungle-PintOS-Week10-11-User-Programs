@@ -9,103 +9,147 @@
 #include "intrinsic.h"
 #include "include/lib/kernel/stdio.h"
 
+// pml4_get_page를 위해 추가
+#include "threads/palloc.h"
+
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 bool is_valid_user_buffer(void *buffer, unsigned size);
 
-/*
-	사용자 프로세스가 커널 기능에 접근하고자 할 때마다 시스템 콜을 호출합니다. 
-	이것은 스켈레톤(기본 뼈대) 시스템 콜 핸들러입니다. 
-	현재는 단순히 메시지를 출력하고 사용자 프로세스를 종료시키는 역할만 합니다. 
-	이 프로젝트의 파트 2에서 여러분은 시스템 콜에 필요한 모든 다른 작업을 수행하는 코드를 추가하게 될 것입니다.
-*/ 
+// syscall
+// void sys_exit(int status);
+// void sys_write(int fd, void *buffer, unsigend size);
 
-/* System call.
- *
- * Previously system call services was handled by the interrupt handler
- * (e.g. int 0x80 in linux). However, in x86-64, the manufacturer supplies
- * efficient path for requesting the system call, the `syscall` instruction.
- *
- * The syscall instruction works by reading the values from the the Model
- * Specific Register (MSR). For the details, see the manual. */
+void check_address(void *addr);
 
-#define MSR_STAR 0xc0000081         /* Segment selector msr */
-#define MSR_LSTAR 0xc0000082        /* Long mode SYSCALL target */
-#define MSR_SYSCALL_MASK 0xc0000084 /* Mask for the eflags */
+/* 시스템 콜.
+ * 
+ * 이전에는 시스템 콜 서비스가 인터럽트 핸들러에 의해 처리되었습니다
+ * (예: 리눅스의 int 0x80). 하지만 x86-64에서는 제조사가
+ * 시스템 콜 요청을 위한 효율적인 경로인 `syscall` 명령어를 제공합니다.
+ * 
+ * `syscall` 명령어는 모델 특정 레지스터(MSR)의 값을 읽어 동작합니다.
+ * 자세한 내용은 매뉴얼을 참조하세요. */
+
+#define MSR_STAR 0xc0000081         /* 세그먼트 셀렉터 MSR */
+#define MSR_LSTAR 0xc0000082        /* 롱 모드 SYSCALL 타겟 */
+#define MSR_SYSCALL_MASK 0xc0000084 /* eflags를 위한 마스크 */
 
 void syscall_init (void) {
 	write_msr(MSR_STAR, ((uint64_t)SEL_UCSEG - 0x10) << 48 | ((uint64_t)SEL_KCSEG) << 32);
 	write_msr(MSR_LSTAR, (uint64_t) syscall_entry);
 
-	/* The interrupt service rountine should not serve any interrupts
-	 * until the syscall_entry swaps the userland stack to the kernel
-	 * mode stack. Therefore, we masked the FLAG_FL. */
+	/* 인터럽트 서비스 루틴은 syscall_entry가 유저랜드 스택을
+	 * 커널 모드 스택으로 바꿀 때까지 어떠한 인터럽트도 처리해서는 안 됩니다.
+	 * 따라서 FLAG_FL을 마스킹합니다. */
 	write_msr(MSR_SYSCALL_MASK, FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
 }
 
-/* The main system call interface */
+static void die_with_status (int status) {
+  struct thread *t = thread_current();
+  t->exit_status = status;
+  printf("%s: exit(%d)\n", t->name, status);
+  thread_exit();   // 반환 안 함
+}
+
+// 사용자가 제공한 주소가 유효한지 확인하는 함수
+void check_address(void *addr) {
+  // case1 : 주소가 NULL이 아닌지
+  // case2 : 주소가 사용자 영역 주소인지(커널 영역을 침범하지 않는지)
+  // case3 : 주소가 실제 물리 메모리와 매핑된 페이지인지
+  if (addr == NULL || !is_user_vaddr(addr) || pml4_get_page(thread_current() -> pml4, addr) == NULL) {
+    // 유효하지 않을 경우, 프로세스를 종료
+    die_with_status(-1);
+  }
+}
+
+/* 주 시스템 콜 인터페이스 */
 void syscall_handler (struct intr_frame *f UNUSED) {
-	// TODO: Your implementation goes here.
+	// TODO: 여기에 구현을 추가하세요.
 	switch (f->R.rax) {
     case SYS_HALT:
+      // pintos 종료
+      power_off();
       break;
+    
     case SYS_EXIT:
 			int status = f->R.rdi;
 			thread_current()->exit_status = status;
 			printf("%s: exit(%d)\n", thread_current()->name, status);
 			thread_exit();
       break;
-  case SYS_WRITE:  
-    // 이 안에 `write` 시스템 콜의 상세 기능을 구현합니다.
-    // 1. f->R.rdi, f->R.rsi, f->R.rdx에서 인자(fd, buffer, size)를 가져옵니다.
-		int fd = f->R.rdi;
-		void* buffer = f->R.rsi;
-		unsigned size = f->R.rdx;
-		
-    // 2. buffer 포인터가 유효한지 검사합니다.			
-		// 3. fd가 1(콘솔 출력)인지, 일반 파일인지 구분합니다.
-		if (fd == 1) {
-			if (is_valid_user_buffer(buffer, size)) {
-				putbuf(buffer, size);
-				f->R.rax = size;
-			}
-		} else {
-			// 4. 각 상황에 맞게 데이터를 씁니다.
-			// 5. 쓴 바이트 수를 f->R.rax에 저장해서 반환합니다.
-			f->R.rax;
-		}
-    break;
-  default:
-    break;
+    
+    case SYS_WRITE:
+      // 인자 가져오기
+      int fd = f->R.rdi;
+      const char *buffer = (const char *)f->R.rsi;
+      unsigned size = f->R.rdx;
+
+      // buffer 주소 유효성 검사 : Buffer의 시작과 끝 주소 모두 확인
+      check_address((void *)buffer);
+      check_address((void *)(buffer + size - 1));
+
+      // fd에 따라 처리 분기
+      // case1 : fd == 0
+      if (fd == 0) {
+        // 표준 입력에 쓰는 것은 불가능 : 에러 처리
+        f -> R.rax = -1;
+      } else if (fd == 1) {
+        // 표준 출력 : 화면에 버퍼 내용을 size만큼 출력
+        putbuf(buffer, size);
+        f -> R.rax = size;
+      } else {
+        // fd == 2일 경우,
+        // 파일 쓰기는 아직 구현하지 않았으므로 에러 처리
+        f->R.rax = -1;
+      }
+      break;
+
+    default:
+      break;
   }
 
 	// thread_exit ();
 }
 
 
-// buffer부터 size 바이트까지의 모든 주소가 유효한지 확인하는 함수
 bool is_valid_user_buffer(void *buffer, unsigned size) {
 	bool flag = true;
 
-    // 1. buffer 시작 주소가 유효한지 확인
-	// 2. buffer + size - 1 끝 주소가 유효한지 확인
 	if (buffer == NULL || !is_user_vaddr(buffer)|| !is_user_vaddr(buffer + size - 1)) {
 		return false;
 	}
 
-    // 3. 그 사이의 모든 페이지들이 매핑되어 있는지 반복문으로 확인
-    //    (pml4_get_page를 사용)
-	void *current_page = pg_round_down(buffer); // 시작 페이지 계산
-    void *end_page = pg_round_down(buffer + size - 1); // 끝 페이지 계산
+	void *current_page = pg_round_down(buffer);
+  void *end_page = pg_round_down(buffer + size - 1);
 
-    while (current_page <= end_page) {
-        // 3. 각 페이지가 실제 메모리에 매핑되었는지 확인
-        if (pml4_get_page(thread_current()->pml4, current_page) == NULL) {
-            return false; // 매핑되지 않았으면 실패
-        }
-        current_page += PGSIZE; // 다음 페이지로 이동
+  while (current_page <= end_page) {
+    if (pml4_get_page(thread_current()->pml4, current_page) == NULL) {
+      return false;
     }
+      current_page += PGSIZE;
+  }
     
-    // 모든 검사를 통과하면 true, 하나라도 실패하면 false 반환
 	return true;
+}
+
+// syscall
+// write
+void sys_write(int fd, void* buffer, unsigned size) {
+	if (is_valid_user_buffer(buffer, size)) {
+		if (fd == 1) {
+			putbuf(buffer, size);
+			// f->R.rax = size;
+		} else {
+			thread_exit();
+		}
+	}
+}
+
+// exit
+void sys_exit(int status) {
+	struct thread* cur_thread = thread_current();
+	cur_thread->exit_status = status;
+	printf("%s: exit(%d)\n", cur_thread->name, status);
+	thread_exit();
 }
