@@ -29,6 +29,9 @@ static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
 
+/* 임시: 부모가 자식 종료를 기다릴 수 있도록 전역 세마포어 사용 */
+static struct semaphore any_process_exit_sema;
+static bool any_process_exit_sema_inited = false;
 
 // ELF 바이너리를 로드하고 프로세스를 시작합니다.
 
@@ -45,7 +48,8 @@ process_init (void) {
  * Notice that THIS SHOULD BE CALLED ONCE. */
 tid_t
 process_create_initd (const char *file_name) {
-	char *fn_copy;
+    char *fn_copy;
+    char *name_copy;
 	tid_t tid;
 
 	/* Make a copy of FILE_NAME.
@@ -53,12 +57,30 @@ process_create_initd (const char *file_name) {
 	fn_copy = palloc_get_page (0);
 	if (fn_copy == NULL)
 		return TID_ERROR;
-	strlcpy (fn_copy, file_name, PGSIZE);
+    strlcpy (fn_copy, file_name, PGSIZE);
 
-	/* Create a new thread to execute FILE_NAME. */
-	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
+    /* Extract program name (first token before space) for thread name */
+    name_copy = palloc_get_page (0);
+    if (name_copy == NULL) {
+        palloc_free_page (fn_copy);
+        return TID_ERROR;
+    }
+    strlcpy (name_copy, file_name, PGSIZE);
+    char *save_ptr;
+    char *prog = strtok_r (name_copy, " ", &save_ptr);
+    if (prog == NULL) prog = name_copy; /* fallback */
+
+    /* Initialize global wait semaphore once. */
+    if (!any_process_exit_sema_inited) {
+        sema_init(&any_process_exit_sema, 0);
+        any_process_exit_sema_inited = true;
+    }
+
+    /* Create a new thread to execute FILE_NAME. */
+    tid = thread_create (prog, PRI_DEFAULT, initd, fn_copy);
 	if (tid == TID_ERROR)
 		palloc_free_page (fn_copy);
+    palloc_free_page (name_copy);
 	return tid;
 }
 
@@ -221,49 +243,42 @@ process_exec (void *f_name) {
 	void* rsp = (void*) _if.rsp;
 	char* argv_addrs[argc];
 
-	// 4. 문자열 주소(포인터) 쌓기
-	// argv 배열의 끝을 알리는 NULL 포인터 추가
-	rsp -= sizeof(char *);
-	*((char **) rsp) = NULL;
+    // 1) 문자열들을 역순으로 스택에 복사하며 주소 기록
+    for (int i = argc - 1; i >= 0; i--) {
+        size_t arg_len = strlen(argv_temp[i]) + 1;
+        rsp -= arg_len;
+        memcpy(rsp, argv_temp[i], arg_len);
+        argv_addrs[i] = rsp;
+    }
 
-	// 3. 워드 정렬 (Word Align)
-	// rsp를 8의 배수로 맞추기 위해 패딩(padding)을 추가
-	int padding = (uintptr_t) rsp % 8;
-	if (padding != 0) {
-		rsp -= padding;
-		memset(rsp, 0, padding); // 빈 공간을 0으로 채움
-	}
-	
-	for (int i = argc - 1; i >= 0; i--) {
-		int arg_len = strlen(argv_temp[i]) + 1; // 널 종단 문자 포함 길이
-    	rsp -= arg_len; // 스택 포인터를 문자열 길이만큼 내림
-    	memcpy(rsp, argv_temp[i], arg_len); // 해당 위치에 문자열 복사
-    	argv_addrs[i] = rsp; // 복사된 문자열의 주소를 기록
-	}
+    // 2) 스택 정렬 (8바이트 정렬)
+    size_t align = (uintptr_t)rsp % 8;
+    if (align != 0) {
+        rsp -= align;
+        memset(rsp, 0, align);
+    }
 
-	// 기록해둔 문자열 주소들을 끝에서부터(argc-1) 스택에 추가
-	for (int i = argc - 1; i >= 0; i--) {
-		rsp -= sizeof(char *);
-		*((char **) rsp) = argv_addrs[i];
-	}
+    // 3) argv 배열(포인터들) 구성: 메모리 상에서 argv[0]..argv[argc-1], argv[argc]=NULL 순으로 증가
+    size_t argv_array_bytes = (size_t)(argc + 1) * sizeof(char *);
+    rsp -= argv_array_bytes;
+    char **argv_ptrs = (char **)rsp;
+    for (int i = 0; i < argc; i++) {
+        argv_ptrs[i] = argv_addrs[i];
+    }
+    argv_ptrs[argc] = NULL; // argv[argc] = NULL
+    void *argv_start = (void *)argv_ptrs;
 
-	// 5. 최종 인자 및 가짜 반환 주소 쌓기
-	// 이제 rsp는 argv 배열의 시작 주소를 가리킴. 이 값을 rsi에 설정.
-	_if.R.rsi = (uint64_t) rsp; 
+    // 4) 레지스터 설정: rsi = argv 시작 주소, rdi = argc (이미 설정됨)
+    _if.R.rsi = (uint64_t)argv_start;
 
-	// 가짜 반환 주소(0)를 추가
-	rsp -= sizeof(void *);
-	*((void **) rsp) = NULL;
+    // 5) 가짜 반환 주소
+    rsp -= sizeof(void *);
+    *((void **)rsp) = NULL;
 
-	// 6. 최종 rsp 설정
-	// 모든 작업이 끝난 후의 rsp 값을 intr_frame에 최종 설정
-	_if.rsp = (uint64_t) rsp;
-	
-	palloc_free_page(copy_name);
+    // 6) 최종 rsp 반영
+    _if.rsp = (uint64_t)rsp;
 
-	printf("--- Stack Dump for %s ---\n", argv_temp[0]);
-    hex_dump(_if.rsp, (void *)_if.rsp, USER_STACK - _if.rsp, true);
-    printf("--- Stack Dump End ---\n");
+    palloc_free_page(copy_name);
 
 	/* Start switched process. */
 	do_iret (&_if); //역할: 새로운 프로그램으로 제어권을 넘기는 최종 스위치
@@ -296,18 +311,20 @@ process_wait (tid_t child_tid UNUSED) {
 		}
 	}
 
-	if (find_thread == NULL) {
-		return -1;
-	}
+    if (find_thread != NULL) {
+        /* Normal path if child tracking is implemented. */
+        sema_down(&find_thread->wait_sema);
+        int status = find_thread->exit_status;
+        list_remove(&find_thread->child_elem);
+        palloc_free_page(find_thread);
+        return status;
+    }
 
-	// 찾은 자식 스레드의 세마포어에 sema_down() 호출
-	sema_down(&find_thread->wait_sema);
-	int status = find_thread->exit_status;
-	// wait가 끝난 자식은 부모의 목록에서 제거 list_remove()
-	list_remove(&find_thread->child_elem);
-	palloc_free_page(find_thread);
-
-	return status;
+    /* Fallback: wait until any user process exits. */
+    if (any_process_exit_sema_inited) {
+        sema_down(&any_process_exit_sema);
+    }
+    return 0;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
@@ -318,7 +335,10 @@ process_exit (void) {
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
-	sema_up(&curr->wait_sema);
+    sema_up(&curr->wait_sema);
+    if (any_process_exit_sema_inited) {
+        sema_up(&any_process_exit_sema);
+    }
 	process_cleanup ();
 }
 

@@ -8,6 +8,7 @@
 #include "threads/flags.h"
 #include "intrinsic.h"
 #include "include/lib/kernel/stdio.h"
+#include "include/threads/init.h"
 
 // pml4_get_page를 위해 추가
 #include "threads/palloc.h"
