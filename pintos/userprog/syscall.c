@@ -20,7 +20,7 @@
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
-bool is_valid_user_buffer(void *buffer, unsigned size);
+void is_valid_user_buffer(void *buffer, unsigned size);
 bool is_valid_user_string(char* user_string);
 void sys_exit(int status);
 bool sys_create(struct intr_frame *f UNUSED);
@@ -28,13 +28,7 @@ unsigned sys_write(struct intr_frame *f UNUSED);
 void sys_close(struct intr_frame* f UNUSED);
 int sys_read(struct intr_frame* f UNUSED);
 bool is_invaild_fd(int fd);
-
-/*
-	사용자 프로세스가 커널 기능에 접근하고자 할 때마다 시스템 콜을 호출합니다. 
-	이것은 스켈레톤(기본 뼈대) 시스템 콜 핸들러입니다. 
-	현재는 단순히 메시지를 출력하고 사용자 프로세스를 종료시키는 역할만 합니다. 
-	이 프로젝트의 파트 2에서 여러분은 시스템 콜에 필요한 모든 다른 작업을 수행하는 코드를 추가하게 될 것입니다.
-*/ 
+bool is_valid_address(void *address);
 
 /* System call.
  *
@@ -78,11 +72,7 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			f->R.rax = sys_write(f);
             break;
 		case SYS_READ:
-			int value = sys_read(f);
-			if (value < 0) 
-				f->R.rax = 0;
-			else
-				f->R.rax = value;
+			f->R.rax = sys_read(f);
 			break;
 		case SYS_CREATE:
 			f->R.rax = sys_create(f);
@@ -93,8 +83,31 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_CLOSE:
 			sys_close(f);
 			break;
+		case SYS_FILESIZE:
+			f->R.rax = sys_file_size(f);
+			break;
     }
 }
+
+
+int sys_file_size(struct intr_frame* f UNUSED) {
+	int fd = f->R.rdi;
+	if (is_invaild_fd(fd) || fd == 1) {
+		return -1;
+	}
+	off_t size = 0;
+	#ifdef USERPROG
+		lock_acquire(&filesys_lock);
+		struct file* file_obj = thread_current()->fd_table[fd];
+		if (file_obj == NULL) {
+			return -1;
+		}
+		size = file_length(file_obj);
+		lock_release(&filesys_lock);
+	#endif
+	return size;
+}
+
 
 int sys_read(struct intr_frame* f UNUSED) {
 	// 인자 가져오기
@@ -102,44 +115,59 @@ int sys_read(struct intr_frame* f UNUSED) {
 	void* buffer = f->R.rsi;
 	unsigned size = f->R.rdx;
 
-	if (!is_valid_user_buffer(buffer, size)) {
-        sys_exit(EXIT_STATUS);
-    }
+	if (size <= 0) {
+		return 0;
+	}
 
+	is_valid_user_buffer(buffer, size);
 	struct thread* cur_thread = thread_current();
 	off_t bytes_read = 0;
-
-	// read 시스템 콜이 호출되면, 먼저 커널 공간에 임시 버퍼를 하나 만듭니다 (malloc 사용).
-	// file_read를 호출하여 파일의 내용을 이 커널의 임시 버퍼로 읽어옵니다.
-	// 읽기가 성공하면, 커널의 임시 버퍼에 있는 내용을 사용자 공간의 buffer로 복사해줍니다 (memcpy 사용).
-	// 마지막으로, 할당했던 커널의 임시 버퍼를 free 해줍니다.
-	lock_acquire(&filesys_lock);
+	
 	#ifdef USERPROG
 		// fd 유효성 검사
-		if (is_invaild_fd(fd)) {
-			sys_exit(EXIT_STATUS);
-		}
+		if (fd == 0) {
+			char *char_buffer = (char *) buffer;
+			int i; // 실제로 몇 글자를 읽었는지 세는 카운터
+
+			// size 만큼 반복해서 키보드 입력을 받습니다.
+			for (i = 0; i < size; i++) {
+				char key = input_getc(); 
+				char_buffer[i] = key; 
+				if (key == '\0') {
+					break;
+				}
+			}
+
+			// 실제로 읽은 문자의 개수 i를 반환합니다.
+			return i;
+		} else if (fd == 1) {
+			return -1;
+		} else {
+			if (is_invaild_fd(fd) || fd == 1) {
+				return -1;
+			}
 	
-		void *temp_buffer = malloc(size);
-		if (temp_buffer == NULL) {
-			lock_release(&filesys_lock); // 락을 잡았다면 풀어줘야 함
-			return -1; // 메모리 할당 실패
+			void *temp_buffer = malloc(size);
+			if (temp_buffer == NULL) {
+				return -1;
+			}
+	
+			lock_acquire(&filesys_lock);
+			struct file* file_obj = cur_thread->fd_table[fd];
+			// 실제 데이터 읽기
+			bytes_read = file_read(file_obj, temp_buffer, size);
+			lock_release(&filesys_lock);
+	
+			if (bytes_read > 0) {
+				memcpy(buffer, temp_buffer, bytes_read);
+			} else {
+				free(temp_buffer);
+				sys_exit(EXIT_STATUS);
+			}
+	
+			free(temp_buffer);
 		}
-		
-		struct file* file_obj = cur_thread->fd_table[fd];
-
-		// 실제 데이터 읽기
-		bytes_read = file_read(file_obj, temp_buffer, size);
-
-		if (bytes_read > 0) {
-			memcpy(buffer, temp_buffer, bytes_read);
-		}
-
-		// 임시 버퍼를 해제한다.
-		free(temp_buffer);
-
 	#endif
-	lock_release(&filesys_lock);
 
 	return bytes_read;
 }
@@ -152,23 +180,28 @@ bool is_invaild_fd(int fd) {
 
 void sys_close(struct intr_frame* f UNUSED) {
 	int fd = f->R.rdi;
+	if (is_invaild_fd(fd) || fd == 1) {
+		sys_exit(EXIT_STATUS);
+	}
+
 	struct thread* current_thread = thread_current();
 
 	#ifdef USERPROG
-		if (is_invaild_fd(fd)) {
-			sys_exit(EXIT_STATUS);
-		}
+		lock_acquire(&filesys_lock);
+		struct file *file_to_close = current_thread->fd_table[fd];
+		file_close(file_to_close);
 		current_thread->fd_table[fd] = NULL;
-		file_close(current_thread->fd_table[fd]);
+		lock_release(&filesys_lock);
 	#endif
 }
 
+// vaild 추가 x
 int sys_open(struct intr_frame* f UNUSED) {
 	// 1. 인자가져오기
 	char* file_name = f->R.rdi;
 	struct thread* cur_thread = thread_current();
 
-	// 2. 포인터 유효성 검사
+	//  2. 포인터 유효성 검사
 	if (!is_valid_user_string(file_name)) {
 		sys_exit(EXIT_STATUS);
 	}
@@ -176,23 +209,25 @@ int sys_open(struct intr_frame* f UNUSED) {
 	// 3. 파일 열기 (동기화 포함)
 	lock_acquire(&filesys_lock);
 	struct file* file_obj = filesys_open(file_name);
+	lock_release(&filesys_lock);
 
 	// 4. 파일 디스크립터 할당
 	if (file_obj == NULL) {
-		lock_release(&filesys_lock);
+		file_close(file_obj);
 		return -1;
 	}
+	
+	lock_acquire(&filesys_lock);
 	int fd = -1;
 	#ifdef USERPROG
-		for (int i = 3; i < FD_MAX; i++) {
-			if (cur_thread->fd_table[i] == NULL) {
-				cur_thread->fd_table[i] = file_obj;
-				fd = i;
-				break;
-			}
+	for (int i = 3; i < FD_MAX; i++) {
+		if (cur_thread->fd_table[i] == NULL) {
+			cur_thread->fd_table[i] = file_obj;
+			fd = i;
+			break;
 		}
+	}
 	#endif
-
 	lock_release(&filesys_lock);
 
 	if (fd == -1) {
@@ -205,35 +240,41 @@ int sys_open(struct intr_frame* f UNUSED) {
 bool sys_create(struct intr_frame *f UNUSED) {
 	char* file_name = f->R.rdi;
 	unsigned file_size = f->R.rsi;
+	bool sucess = false;
 
-	// 1. 포인터 유효성 검사
-	if (!is_valid_user_buffer(file_name, file_size)) {
-		sys_exit(EXIT_STATUS);
-	}
+	// 1. 유효성 검사
+	is_valid_user_buffer(file_name, file_size);
+	is_valid_address(file_name);
 
 	// 2. 동기화 락 획득 - 다른 스레드 및 프로세스가 접근 불가능한 임계구역 설정
 	lock_acquire(&filesys_lock);
 	// 3. 실제 파일 만들기
-	bool sucess = filesys_create(file_name, file_size);
+	sucess = filesys_create(file_name, file_size);
 	// 4. 락 동기화 해제
 	lock_release(&filesys_lock);
 	return sucess;
 }
 
 
+// 다른 valid 추가 x
 unsigned sys_write(struct intr_frame *f UNUSED) {
 	int fd = f->R.rdi;
 	void* buffer = f->R.rsi;
 	unsigned size = f->R.rdx;
 
-	if (!is_valid_user_buffer(buffer, size)) {
+	if (size < 0) {
 		sys_exit(EXIT_STATUS);
 	}
+	
+	// 1. 유효성 검사
+	is_valid_user_buffer(buffer, size);
+	// is_valid_address(buffer);
 
+	lock_acquire(&filesys_lock);
 	if (fd == 1) {
 		putbuf(buffer, size);
-		
 	}
+	lock_release(&filesys_lock);
 	return size;
 }
 
@@ -256,7 +297,7 @@ bool is_valid_user_string(char* user_string) {
 	// 3. 한 바이트씩 안전하게 복사:
 	for (int i = 0; i < MAX_BUFFER_SIZE ; i++) {
 		char* current_char_addr = user_string + i;
-		if (!is_user_vaddr(current_char_addr) || pml4_get_page(thread_current()->pml4, current_char_addr) == NULL) {
+		if (is_kernel_vaddr(current_char_addr) || pml4_get_page(thread_current()->pml4, current_char_addr) == NULL) {
 			return false;
 		}
 
@@ -273,30 +314,34 @@ bool is_valid_user_string(char* user_string) {
 	return true;
 }
 
-
-// buffer부터 size 바이트까지의 모든 주소가 유효한지 확인하는 함수
-bool is_valid_user_buffer(void *buffer, unsigned size) {
-	bool flag = true;
-
-    // 1. buffer 시작 주소가 유효한지 확인
-	// 2. buffer + size - 1 끝 주소가 유효한지 확인
-	if (buffer == NULL || !is_user_vaddr(buffer)|| !is_user_vaddr(buffer + size - 1)) {
+bool is_valid_address(void *address) {	
+	// 커널영역이거나, address가 null이거나, 가상페이지에 할당되었는지
+	void *current_page = pg_round_down(address);
+	if (!is_user_vaddr(address) || address == NULL || pml4_get_page(thread_current()->pml4, current_page) == NULL) {
 		return false;
 	}
+}
 
-    // 3. 그 사이의 모든 페이지들이 매핑되어 있는지 반복문으로 확인
-    //    (pml4_get_page를 사용)
-	void *current_page = pg_round_down(buffer); // 시작 페이지 계산
-    void *end_page = pg_round_down(buffer + size - 1); // 끝 페이지 계산
+void is_valid_user_buffer(void *address, unsigned size) {
+	if (size < 0) {
+		sys_exit(EXIT_STATUS);
+	}
 
+    // 1. buffer 시작 주소, 끝 주소가 유효한지 확인
+	if (address == NULL || !is_user_vaddr(address)|| !is_user_vaddr(address + size - 1)) {
+		sys_exit(EXIT_STATUS);
+	}
+
+	void *current_page = pg_round_down(address); // 시작 페이지 계산
+    void *end_page = pg_round_down(address + size - 1); // 끝 페이지 계산
+	// USER_STACK 0x47480000
+
+	// 2. 그 사이의 모든 페이지들이 매핑되어 있는지 반복문으로 확인 (pml4_get_page를 사용)
     while (current_page <= end_page) {
         // 3. 각 페이지가 실제 메모리에 매핑되었는지 확인
         if (pml4_get_page(thread_current()->pml4, current_page) == NULL) {
-            return false; // 매핑되지 않았으면 실패
+            sys_exit(EXIT_STATUS); // 매핑되지 않았으면 실패
         }
         current_page += PGSIZE; // 다음 페이지로 이동
     }
-    
-    // 모든 검사를 통과하면 true, 하나라도 실패하면 false 반환
-	return true;
 }

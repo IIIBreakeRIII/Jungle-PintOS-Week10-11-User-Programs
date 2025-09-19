@@ -19,7 +19,9 @@
 #include "threads/vaddr.h"
 #include "intrinsic.h"
 #include "include/lib/kernel/stdio.h"
-// #include "include/lib/string.h"
+#include "include/threads/vaddr.h"
+#include "include/threads/mmu.h"
+
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -669,7 +671,6 @@ static bool
 setup_stack (struct intr_frame *if_) {
 	uint8_t *kpage;
 	bool success = false;
-
 
 	kpage = palloc_get_page (PAL_USER | PAL_ZERO);
 	if (kpage != NULL) {
