@@ -578,6 +578,10 @@ static void init_thread(struct thread *t, const char *name, int priority) {
     list_init(&t->child_list);
     sema_init(&t->wait_sema, 0); // 세마 초기화
     t->exit_status = 0;
+    // fd_table 초기화
+    for (int i = 0; i < 64; i++) {
+      t->fd_table[i] = NULL;
+    }
   #endif
 
   /* mlfqs 멤버 초기화 */

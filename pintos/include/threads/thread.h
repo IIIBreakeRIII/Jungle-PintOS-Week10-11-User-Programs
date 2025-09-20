@@ -9,6 +9,10 @@
 #include "threads/interrupt.h"
 #include "threads/synch.h"
 
+#ifdef USERPROG
+struct file; /* Forward declaration */
+#endif
+
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -125,6 +129,7 @@ struct thread {
 #ifdef USERPROG
   /* Owned by userprog/process.c. */
   uint64_t *pml4; /* Page map level 4 */
+  struct file *fd_table[64]; /* 파일 디스크립터 테이블 */
 #endif
 #ifdef VM
   /* Table for whole virtual memory owned by thread. */

@@ -186,8 +186,7 @@ error:
 
 /* Switch the current execution context to the f_name.
  * Returns -1 on fail. */
-int
-process_exec (void *f_name) {
+int process_exec (void *f_name) {
 	char *file_name = f_name;
 	char *save_ptr;
 	char *delim = " ";

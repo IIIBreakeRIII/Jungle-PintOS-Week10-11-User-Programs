@@ -9,28 +9,36 @@
 #include "intrinsic.h"
 #include "include/lib/kernel/stdio.h"
 #include "include/threads/init.h"
-
-// pml4_get_page를 위해 추가
 #include "threads/palloc.h"
+#include "userprog/process.h"
+#include "string.h"
+#include "devices/input.h"
+
+#include "filesys/filesys.h"
+#include "filesys/file.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 bool is_valid_user_buffer(void *buffer, unsigned size);
 
-// syscall
-// void sys_exit(int status);
-// void sys_write(int fd, void *buffer, unsigend size);
-
+// address check
 void check_address(void *addr);
 
-/* 시스템 콜.
- * 
- * 이전에는 시스템 콜 서비스가 인터럽트 핸들러에 의해 처리되었습니다
- * (예: 리눅스의 int 0x80). 하지만 x86-64에서는 제조사가
- * 시스템 콜 요청을 위한 효율적인 경로인 `syscall` 명령어를 제공합니다.
- * 
- * `syscall` 명령어는 모델 특정 레지스터(MSR)의 값을 읽어 동작합니다.
- * 자세한 내용은 매뉴얼을 참조하세요. */
+// System syscall
+void sys_halt_handler(void);
+void sys_exit_handler(int arg1);
+bool sys_create_handler(const char *file, unsigned initial_size);
+int sys_read_handler(int fd, void *buffer, unsigned size);
+int sys_write_handler(int fd, const char *buffer, unsigned size);
+int sys_open_handler(const char*filename);
+int sys_exec_handler(const char *cmd_line);
+
+// 전역 파일시스템 락 실제 정의
+struct lock filesys_lock;
+
+// 파일 디스크립터 관련 상수
+#define FDBASE 2    // 표준 입출력(0,1) 제외하고 시작
+#define FDLIMIT 64  // 최대 파일 디스크립터 개수
 
 #define MSR_STAR 0xc0000081         /* 세그먼트 셀렉터 MSR */
 #define MSR_LSTAR 0xc0000082        /* 롱 모드 SYSCALL 타겟 */
@@ -40,13 +48,12 @@ void syscall_init (void) {
 	write_msr(MSR_STAR, ((uint64_t)SEL_UCSEG - 0x10) << 48 | ((uint64_t)SEL_KCSEG) << 32);
 	write_msr(MSR_LSTAR, (uint64_t) syscall_entry);
 
-	/* 인터럽트 서비스 루틴은 syscall_entry가 유저랜드 스택을
-	 * 커널 모드 스택으로 바꿀 때까지 어떠한 인터럽트도 처리해서는 안 됩니다.
-	 * 따라서 FLAG_FL을 마스킹합니다. */
 	write_msr(MSR_SYSCALL_MASK, FLAG_IF | FLAG_TF | FLAG_DF | FLAG_IOPL | FLAG_AC | FLAG_NT);
+
+  lock_init(&filesys_lock);
 }
 
-static void die_with_status (int status) {
+static void die_with_status(int status) {
   struct thread *t = thread_current();
   t->exit_status = status;
   printf("%s: exit(%d)\n", t->name, status);
@@ -70,40 +77,32 @@ void syscall_handler (struct intr_frame *f UNUSED) {
 	switch (f->R.rax) {
     case SYS_HALT:
       // pintos 종료
-      power_off();
+      sys_halt_handler();
       break;
     
     case SYS_EXIT:
 			int status = f->R.rdi;
-			thread_current()->exit_status = status;
-			printf("%s: exit(%d)\n", thread_current()->name, status);
-			thread_exit();
+      sys_exit_handler(status);
       break;
+
+    case SYS_CREATE:
+      f->R.rax = sys_create_handler((const char *)f->R.rdi, f->R.rsi);
+      break;
+
+    case SYS_READ:
+      f->R.rax = sys_read_handler(f->R.rdi, (void *)f->R.rsi, f->R.rdx);
+		  break;
     
     case SYS_WRITE:
-      // 인자 가져오기
-      int fd = f->R.rdi;
-      const char *buffer = (const char *)f->R.rsi;
-      unsigned size = f->R.rdx;
+      f->R.rax = sys_write_handler(f->R.rdi, (const char *)f->R.rsi, f->R.rdx);
+      break;
 
-      // buffer 주소 유효성 검사 : Buffer의 시작과 끝 주소 모두 확인
-      check_address((void *)buffer);
-      check_address((void *)(buffer + size - 1));
+    case SYS_OPEN:
+      f->R.rax = sys_open_handler((const char *)f->R.rdi);
+      break;
 
-      // fd에 따라 처리 분기
-      // case1 : fd == 0
-      if (fd == 0) {
-        // 표준 입력에 쓰는 것은 불가능 : 에러 처리
-        f -> R.rax = -1;
-      } else if (fd == 1) {
-        // 표준 출력 : 화면에 버퍼 내용을 size만큼 출력
-        putbuf(buffer, size);
-        f -> R.rax = size;
-      } else {
-        // fd == 2일 경우,
-        // 파일 쓰기는 아직 구현하지 않았으므로 에러 처리
-        f->R.rax = -1;
-      }
+    case SYS_EXEC:
+      f->R.rax = sys_exec_handler((const char *)f->R.rdi);
       break;
 
     default:
@@ -134,23 +133,135 @@ bool is_valid_user_buffer(void *buffer, unsigned size) {
 	return true;
 }
 
-// syscall
-// write
-void sys_write(int fd, void* buffer, unsigned size) {
-	if (is_valid_user_buffer(buffer, size)) {
-		if (fd == 1) {
-			putbuf(buffer, size);
-			// f->R.rax = size;
-		} else {
-			thread_exit();
-		}
-	}
+// syscall_halt
+void sys_halt_handler(void) {
+  power_off();
 }
 
-// exit
-void sys_exit(int status) {
-	struct thread* cur_thread = thread_current();
-	cur_thread->exit_status = status;
-	printf("%s: exit(%d)\n", cur_thread->name, status);
+// syscall_exit
+void sys_exit_handler(int arg1) {
+  thread_current()->exit_status = arg1;
+  printf("%s: exit(%d)\n", thread_current()->name, arg1);
 	thread_exit();
+}
+
+bool sys_create_handler(const char *file, unsigned initial_size) {
+  lock_acquire(&filesys_lock);
+  check_address(file);
+
+  bool success = filesys_create(file, initial_size);
+  
+  lock_release(&filesys_lock);
+
+  return success;
+}
+
+// int sys_read_handler(int fd, void* buffer, unsigned size){
+// 	struct thread *curr = thread_current();
+// 	int result;
+// 	if (fd < FDBASE || fd >= FDLIMIT || curr->fd_table[fd] == NULL || buffer == NULL || is_kernel_vaddr(buffer) || !pml4_get_page(curr->pml4, buffer))
+// 	{
+// 		thread_current()->exit_status = -1;
+// 		thread_exit();
+// 	}
+// 	struct file *f = curr->fd_table[fd];
+// 	lock_acquire(&filesys_lock);
+// 	result = file_read(f, buffer, size);
+// 	lock_release(&filesys_lock);
+// 	return result;
+// }
+
+int sys_read_handler(int fd, void *buffer, unsigned size){
+  if (size == 0) return 0;
+  if (!is_valid_user_buffer(buffer, size)) {
+      die_with_status(-1);
+  }
+
+  if (fd == 0) {
+      unsigned i;
+      for (i = 0; i < size; i++) {
+          ((char *)buffer)[i] = input_getc();
+      }
+      return (int) size;
+  }
+
+  // 파일 입력은 아직 미구현
+  return -1;
+}
+
+int sys_exec_handler(const char *cmd_line) {
+  struct thread *curr = thread_current();
+  if (cmd_line == NULL || !is_user_vaddr(cmd_line) || pml4_get_page(curr->pml4, cmd_line) == NULL) {
+    die_with_status(-1);
+  }
+
+  char *fn_copy = palloc_get_page(0);
+  if (fn_copy == NULL) {
+    return -1;
+  }
+  strlcpy(fn_copy, cmd_line, PGSIZE);
+  return process_exec(fn_copy);
+}
+
+int sys_write_handler(int fd, const char *buffer, unsigned size) {
+  // check_address((void *)buffer);
+  // check_address((void *)(buffer + size - 1));
+  //
+  // // fd에 따라 처리 분기
+  // // case1 : fd == 0
+  // if (fd == 0) {
+  //   // 표준 입력에 쓰는 것은 불가능 : 에러 처리
+  //   f -> R.rax = -1;
+  // } else if (fd == 1) {
+  //   // 표준 출력 : 화면에 버퍼 내용을 size만큼 출력
+  //   putbuf(buffer, size);
+  //   f -> R.rax = size;
+  // } else {
+  //   // fd == 2일 경우,
+  //   // 파일 쓰기는 아직 구현하지 않았으므로 에러 처리
+  //   f->R.rax = -1;
+  // }
+  if (!is_valid_user_buffer((void *)buffer, size)) {
+    die_with_status(-1);
+  }
+
+  if (fd == 1) {
+    putbuf(buffer, size);
+    return (int) size;
+  }
+
+  return 0;
+}
+
+int sys_open_handler(const char *filename){
+	// return -1;
+	struct thread *curr = thread_current();
+	if (!(filename && is_user_vaddr(filename) && pml4_get_page(curr->pml4, filename))) {
+		curr->exit_status = -1;
+		thread_exit();
+	}
+
+	lock_acquire(&filesys_lock);
+	struct file *file = filesys_open(filename);
+	lock_release(&filesys_lock);
+	
+  if (!file) {
+    return -1;
+  }
+
+	struct file **f_table = curr->fd_table;
+	int i = FDBASE;
+	
+  for (; i < FDLIMIT; i++) {
+		if (f_table[i] == NULL) {
+			f_table[i] = file;
+			return i;
+		}
+	}
+
+	lock_acquire(&filesys_lock);
+	file_close(file);
+	lock_release(&filesys_lock);
+	
+  return -1;
 }
