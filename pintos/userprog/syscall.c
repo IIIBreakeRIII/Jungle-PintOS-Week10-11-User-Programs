@@ -14,6 +14,7 @@
 #include "include/devices/input.h"
 #include "include/threads/malloc.h"
 #include "include/lib/string.h"
+#include "userprog/process.h"
 
 #define EXIT_STATUS -1
 #define MAX_BUFFER_SIZE 128
@@ -29,6 +30,9 @@ void sys_close(struct intr_frame* f UNUSED);
 int sys_read(struct intr_frame* f UNUSED);
 bool is_invaild_fd(int fd);
 bool is_valid_address(void *address);
+tid_t fork_(struct intr_frame* f UNUSED);
+tid_t wait_(struct intr_frame* f UNUSED);
+
 
 /* System call.
  *
@@ -86,9 +90,27 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_FILESIZE:
 			f->R.rax = sys_file_size(f);
 			break;
+		case SYS_FORK:
+			f->R.rax = fork_(f);
+			break;
+		case SYS_WAIT:
+			f->R.rax = wait_(f);
+			break;
     }
 }
 
+tid_t wait_(struct intr_frame* f UNUSED) {
+	tid_t pid = f->R.rdi;
+	return process_wait(pid);
+}
+
+tid_t fork_(struct intr_frame* f UNUSED) {
+	char* thread_name = f->R.rdi;
+	if (!is_valid_user_string(thread_name)) {
+		sys_exit(EXIT_STATUS);
+    }
+	return process_fork(thread_name, &f);
+}
 
 int sys_file_size(struct intr_frame* f UNUSED) {
 	int fd = f->R.rdi;
@@ -107,7 +129,6 @@ int sys_file_size(struct intr_frame* f UNUSED) {
 	#endif
 	return size;
 }
-
 
 int sys_read(struct intr_frame* f UNUSED) {
 	// 인자 가져오기
