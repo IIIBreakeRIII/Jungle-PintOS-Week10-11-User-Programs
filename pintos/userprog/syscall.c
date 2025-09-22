@@ -14,7 +14,7 @@
 #include "include/devices/input.h"
 #include "include/threads/malloc.h"
 #include "include/lib/string.h"
-#include "userprog/process.h"
+#include "include/threads/palloc.h"
 
 #define EXIT_STATUS -1
 #define MAX_BUFFER_SIZE 128
@@ -96,7 +96,43 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_WAIT:
 			f->R.rax = wait_(f);
 			break;
+		case SYS_EXEC:
+			f->R.rax = exec_(f);
+			break;
     }
+}
+
+int exec_(struct intr_frame* f UNUSED){
+	char* cmd_line = f->R.rdi;
+
+	if (!is_valid_user_string(cmd_line)) {
+		sys_exit(EXIT_STATUS);
+	}
+
+	int size = strlen(cmd_line) + 1;
+	char *cmd_copy = palloc_get_page(PAL_ZERO);
+
+	if (cmd_copy == NULL)
+		return -1;
+
+	memcpy(cmd_copy, cmd_line, size);
+	// strlcpy(thread_current()->name, cmd_copy[0], strlen(cmd_copy[0]) + 1);
+
+	// char *save_ptr;
+	// char *delim = " ";
+	// char *argv_temp[MAX_BUFFER_SIZE];
+	// int argc = 0;
+
+	// argv_temp[argc] = strtok_r(cmd_copy, delim, &save_ptr);
+	// while (argv_temp[argc] != NULL) {
+	// 	argc++;
+	// 	argv_temp[argc] = strtok_r(NULL, delim, &save_ptr);
+	// }
+	
+	if (process_exec(cmd_copy) == -1)
+		return -1;
+
+	return 0;
 }
 
 int wait_(struct intr_frame* f UNUSED) {

@@ -36,14 +36,6 @@ static void initd (void *f_name);
 static void __do_fork (void *);
 void user_stack_build(struct intr_frame* if_, int argc, char* argv_temp[]);
 
-// struct fork_aux {
-//     struct intr_frame parent_if;      /* 부모의 intr_frame(레지스터 컨텍스트)을 '값'으로 통째 복사해 담아둠 */
-//     struct thread *parent;
-//     struct semaphore done;            /* 부모-자식 동기화용 세마포어: 자식 준비 완료 알림 */
-//     bool success;                     /* 자식이 복제에 성공했는지 부모에게 알려줄 플래그 */
-//     struct wait_status *w;            /* 부모-자식 wait/exit 상태 공유 객체 포인터 */
-// };
-
 // ELF 바이너리를 로드하고 프로세스를 시작합니다.
 
 /* General process initializer for initd and other process. */
@@ -76,7 +68,10 @@ process_create_initd (const char *file_name) {
 	strlcpy (fn_copy, file_name, PGSIZE);
 
 	/* Create a new thread to execute FILE_NAME. */
-	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
+    char *thread_name, *save_ptr;
+    thread_name = strtok_r (fn_copy, " ", &save_ptr);
+	
+	tid = thread_create (thread_name, PRI_DEFAULT, initd, (void *)file_name);
 	if (tid == TID_ERROR)
 		palloc_free_page (fn_copy);
 	
@@ -202,7 +197,6 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 
  
 // 현재 프로세스를 복제하여 THREAD_NAME이라는 이름의 새 프로세스를 생성합니다.
-
 /*
 - **부모 프로세스:** 새로 생성된 자식 프로세스의 `pid` (프로세스 ID)를 반환합니다. 
 자식 프로세스 복제에 실패하면 `TID_ERROR`를 반환해야 합니다.
@@ -248,7 +242,7 @@ __do_fork (void *aux) {
 	 * TODO: 힌트) 파일 객체를 복제하려면, include/filesys/file.h에 있는
  	 * TODO: file_duplicate를 사용하세요. 부모 프로세스는
 	 * TODO: 이 함수가 부모의 자원을 성공적으로 복제할 때까지
-	 * TODO: fork()로부터 반환해서는 안 된다는 점에 유의하세요.*/
+	 * TODO: fork()로부터 반환해서는 안 된다는 점에 유의하세요. */
 	bool filesys_lock_held = false;
 	#ifdef USERPROG
 		lock_acquire(&filesys_lock);
@@ -264,7 +258,6 @@ __do_fork (void *aux) {
 		filesys_lock_held = false;
 	#endif
 	
-	// process_init ();
 	/* Finally, switch to the newly created process. */
 	if (succ) {
 		sema_up(&child->fork_sema);
@@ -337,7 +330,7 @@ void user_stack_build(struct intr_frame* if_, int argc, char* argv_temp[]) {
 	5. 최종 인자 설정: main 함수가 받을 argc와 argv의 시작 주소를 각각 %rdi와 %rsi에 해당하는 _if 멤버에 설정합니다. 
 	마지막으로 가짜 반환 주소를 쌓습니다.
 	6. 최종 rsp 설정: 모든 짐을 다 실은 후의 마지막 위치를 실제 스택 포인터로 _if.rsp에 설정합니다.
-	*/
+*/
 int
 process_exec (void *f_name) {
 	char *file_name = f_name;
@@ -359,7 +352,7 @@ process_exec (void *f_name) {
 		argv_temp[argc] = strtok_r(NULL, delim, &save_ptr);
 	}
 
-	strlcpy(thread_current()->name, argv_temp[0], strlen(argv_temp[0]) + 1);
+	// strlcpy(thread_current()->name, argv_temp[0], strlen(argv_temp[0]) + 1);
 
 	bool success;
 
@@ -453,7 +446,7 @@ process_exit (void) {
 /* Free the current process's resources. */
 static void
 process_cleanup (void) {
-	struct thread *curr = thread_current ();
+	struct thread *curr = thread_current();
 
 #ifdef VM
 	supplemental_page_table_kill (&curr->spt);
