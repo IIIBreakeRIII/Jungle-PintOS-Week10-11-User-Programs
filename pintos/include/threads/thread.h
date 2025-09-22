@@ -91,7 +91,7 @@ typedef int tid_t;
  * ready state is on the run queue, whereas only a thread in the
  * blocked state is on a semaphore wait list. */
 
-
+#define FDCOUNT_LIMIT 1 << 9 // 페이지 크기 4kb / 파일 포인터 8바이트 = 512
 
 struct thread {
   /* Owned by thread.c. */
@@ -123,13 +123,13 @@ struct thread {
 
   struct intr_frame* parent_if; // 부모의 프레임
   struct thread* parent;  // 부모 스레드 추가
-
   int exit_status;
 
 #ifdef USERPROG
   /* Owned by userprog/process.c. */
   uint64_t *pml4; /* Page map level 4 */
   struct file** fd_table;
+  // int fd_index;
 #endif
 #ifdef VM
   /* Table for whole virtual memory owned by thread. */

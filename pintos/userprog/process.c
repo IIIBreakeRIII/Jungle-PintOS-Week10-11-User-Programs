@@ -51,8 +51,8 @@ static void
 process_init (void) {
 	struct thread *current = thread_current ();
 	#ifdef USERPROG
-		current->fd_table = malloc(sizeof(struct file *) * FD_MAX);
-		for (int i = 0; i < FD_MAX; i++) {
+		current->fd_table = malloc(sizeof(struct file *) * FDCOUNT_LIMIT);
+		for (int i = 0; i < FDCOUNT_LIMIT; i++) {
 			current->fd_table[i] = NULL;
 		}
 	#endif
@@ -114,6 +114,9 @@ process_fork (const char *name, struct intr_frame *if_ UNUSED) {
 	/* Clone current thread to new thread.*/
 	// process_init ();
 	struct thread* parent = thread_current();
+	if (parent == NULL) {
+		return TID_ERROR;
+	}
 	parent->parent_if = if_;
 
 	tid_t tid = thread_create (name, PRI_DEFAULT, __do_fork, parent);
@@ -213,7 +216,7 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 */
 static void
 __do_fork (void *aux) {
-	// process_init ();
+	process_init ();
 	struct intr_frame if_;
 	struct thread *parent = (struct thread *) aux;
 	struct thread *child = thread_current();
@@ -246,23 +249,22 @@ __do_fork (void *aux) {
  	 * TODO: file_duplicate를 사용하세요. 부모 프로세스는
 	 * TODO: 이 함수가 부모의 자원을 성공적으로 복제할 때까지
 	 * TODO: fork()로부터 반환해서는 안 된다는 점에 유의하세요.*/
-	// 부모의 td_table -> 자식 td_table
-
 	bool filesys_lock_held = false;
 	#ifdef USERPROG
 		lock_acquire(&filesys_lock);
 		filesys_lock_held = true;
-		for (int fd = 2; fd < FD_MAX; fd++) {
+		for (int fd = 3; fd < FDCOUNT_LIMIT; fd++) {
 			struct file* parent_file = parent->fd_table[fd];
-			if (parent_file != NULL) {
-				child->fd_table[fd] = file_duplicate(parent_file);
+			if (parent->fd_table[fd] == NULL) {
+				continue;
 			}
+			child->fd_table[fd] = file_duplicate(parent->fd_table[fd]);
 		}
 		lock_release(&filesys_lock);
 		filesys_lock_held = false;
 	#endif
 	
-	process_init ();
+	// process_init ();
 	/* Finally, switch to the newly created process. */
 	if (succ) {
 		sema_up(&child->fork_sema);
@@ -434,7 +436,7 @@ process_exit (void) {
 	 * TODO: We recommend you to implement process resource cleanup here. */
 	#ifdef USERPROG
 		/* 1. 열려있는 모든 파일들을 올바른 방법으로 닫기 */
-		for (int i = 0; i < FD_MAX; i++) {
+		for (int i = 0; i < FDCOUNT_LIMIT; i++) {
 			if (curr->fd_table[i] != NULL) {
 				file_close(curr->fd_table[i]);
 			}
@@ -443,7 +445,6 @@ process_exit (void) {
 		free(curr->fd_table);
 	#endif
 
-	// curr->parent->exit_status = curr->exit_status;
 	sema_up(&curr->exit_sema);
 	sema_down(&curr->wait_sema);
 	process_cleanup ();

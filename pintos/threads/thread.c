@@ -585,6 +585,7 @@ static void init_thread(struct thread *t, const char *name, int priority) {
     sema_init(&t->fork_sema, 0);
     sema_init(&t->exit_sema, 0);
     t->parent = NULL;
+    // t->fd_index = 3; 
     t->pml4 = NULL;
     t->exit_status = 0;
   #endif

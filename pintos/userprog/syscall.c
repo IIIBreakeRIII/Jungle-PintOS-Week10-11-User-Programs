@@ -241,7 +241,7 @@ int sys_open(struct intr_frame* f UNUSED) {
 	lock_acquire(&filesys_lock);
 	int fd = -1;
 	#ifdef USERPROG
-	for (int i = 3; i < FD_MAX; i++) {
+	for (int i = 3; i < FDCOUNT_LIMIT; i++) {
 		if (cur_thread->fd_table[i] == NULL) {
 			cur_thread->fd_table[i] = file_obj;
 			fd = i;
