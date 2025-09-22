@@ -71,7 +71,7 @@ void sema_down(struct semaphore *sema) {
     thread_block();
   }
   sema->value--;
-  intr_set_level(old_level);
+intr_set_level(old_level);
 }
 
 /* Down or "P" operation on a semaphore, but only if the

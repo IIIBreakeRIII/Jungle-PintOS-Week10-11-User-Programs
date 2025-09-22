@@ -36,6 +36,13 @@ static void initd (void *f_name);
 static void __do_fork (void *);
 void user_stack_build(struct intr_frame* if_, int argc, char* argv_temp[]);
 
+// struct fork_aux {
+//     struct intr_frame parent_if;      /* 부모의 intr_frame(레지스터 컨텍스트)을 '값'으로 통째 복사해 담아둠 */
+//     struct thread *parent;
+//     struct semaphore done;            /* 부모-자식 동기화용 세마포어: 자식 준비 완료 알림 */
+//     bool success;                     /* 자식이 복제에 성공했는지 부모에게 알려줄 플래그 */
+//     struct wait_status *w;            /* 부모-자식 wait/exit 상태 공유 객체 포인터 */
+// };
 
 // ELF 바이너리를 로드하고 프로세스를 시작합니다.
 
@@ -75,6 +82,7 @@ process_create_initd (const char *file_name) {
 	
 	struct thread* current_thread = thread_current();
 	struct thread* child_thread = get_thread_by_tid(tid);
+	child_thread->parent = current_thread;
 
     if (child_thread == NULL) {
         palloc_free_page(fn_copy);
@@ -106,15 +114,25 @@ process_fork (const char *name, struct intr_frame *if_ UNUSED) {
 	/* Clone current thread to new thread.*/
 	// process_init ();
 	struct thread* parent = thread_current();
+	parent->parent_if = if_;
+
 	tid_t tid = thread_create (name, PRI_DEFAULT, __do_fork, parent);
 	if (tid == TID_ERROR) {
     	return TID_ERROR; 
 	}
+
 	struct thread* child = get_thread_by_tid(tid);
-	parent->parent_if = if_;
+	if (child == NULL) {
+		return TID_ERROR;
+	}
 
 	list_push_back(&parent->child_list, &child->child_elem);
 	sema_down(&child->fork_sema);
+
+	if (child->exit_status == -1) { 
+		list_remove(&child->child_elem);
+    	return TID_ERROR;
+	}
 
 	return tid;
 }
@@ -195,11 +213,12 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 */
 static void
 __do_fork (void *aux) {
-	process_init ();
-
+	// process_init ();
 	struct intr_frame if_;
 	struct thread *parent = (struct thread *) aux;
-	struct thread *current = thread_current();
+	struct thread *child = thread_current();
+	// current->parent = parent;
+
 	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
 	struct intr_frame *parent_if = parent->parent_if;
 	bool succ = true;
@@ -209,17 +228,17 @@ __do_fork (void *aux) {
 	if_.R.rax = 0;
 
 	/* 2. Duplicate PT */
-	current->pml4 = pml4_create();
-	if (current->pml4 == NULL)
+	child->pml4 = pml4_create();
+	if (child->pml4 == NULL)
 		goto error;
-
-	process_activate (current);
+	
+	process_activate (child);
 #ifdef VM
-	supplemental_page_table_init (&current->spt);
-	if (!supplemental_page_table_copy (&current->spt, &parent->spt))
+	supplemental_page_table_init (&child->spt);
+	if (!supplemental_page_table_copy (&child->spt, &parent->spt))
 		goto error;
 #else
-	if (!pml4_for_each (parent->pml4, duplicate_pte, parent))
+	if (!pml4_for_each (parent->pml4, duplicate_pte, parent)) 
 		goto error;
 #endif
 	/* TODO: 여기에 여러분의 코드를 작성하세요.
@@ -227,26 +246,33 @@ __do_fork (void *aux) {
  	 * TODO: file_duplicate를 사용하세요. 부모 프로세스는
 	 * TODO: 이 함수가 부모의 자원을 성공적으로 복제할 때까지
 	 * TODO: fork()로부터 반환해서는 안 된다는 점에 유의하세요.*/
-
 	// 부모의 td_table -> 자식 td_table
+
+	bool filesys_lock_held = false;
 	#ifdef USERPROG
 		lock_acquire(&filesys_lock);
-		for (int fd = 3; fd < FD_MAX; fd++) {
+		filesys_lock_held = true;
+		for (int fd = 2; fd < FD_MAX; fd++) {
 			struct file* parent_file = parent->fd_table[fd];
 			if (parent_file != NULL) {
-				current->fd_table[fd] = file_duplicate(parent_file);
+				child->fd_table[fd] = file_duplicate(parent_file);
 			}
 		}
 		lock_release(&filesys_lock);
+		filesys_lock_held = false;
 	#endif
-	sema_up(&current->fork_sema);
+	
+	process_init ();
 	/* Finally, switch to the newly created process. */
-	if (succ)
+	if (succ) {
+		sema_up(&child->fork_sema);
 		do_iret (&if_);
+	}
 error:
-	current->exit_status = -1;
-	lock_release(&filesys_lock);
-	sema_up(&current->fork_sema);
+	child->exit_status = -1;
+	sema_up(&child->fork_sema);
+	if (filesys_lock_held)
+        lock_release(&filesys_lock);
 	thread_exit ();
 }
 
@@ -350,7 +376,7 @@ process_exec (void *f_name) {
 	success = load (argv_temp[0], &_if); // 새로운 프로그램을 메모리에 적재함
 
 	if (!success) {
-		palloc_free_page(argv_temp[0]);
+		palloc_free_page(copy_name);
 		return -1;
 	}
 
@@ -381,22 +407,24 @@ process_wait (tid_t child_tid UNUSED) {
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
 	struct thread* child_thread = get_thread_by_tid(child_tid);
+	struct thread* current_thread = thread_current();
 	if (child_thread == NULL) {
 		return -1;
 	}
-
 	// 찾은 자식 스레드의 세마포어에 sema_down() 호출
-	sema_down(&child_thread->wait_sema);
-
+	sema_down(&child_thread->exit_sema);
 	int status = child_thread->exit_status;
 	// wait가 끝난 자식은 부모의 목록에서 제거 list_remove()
 	list_remove(&child_thread->child_elem);
-	palloc_free_page(child_thread);
+	// exit same up
+	sema_up(&current_thread->wait_sema);
 
 	return status;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
+// 1. parent에게 정보를 넘겨주기 전까지 죽지 않기 - sema 추가
+// 2. parent에게 정보를 완전히 넘겨주기
 void
 process_exit (void) {
 	struct thread *curr = thread_current ();
@@ -414,8 +442,10 @@ process_exit (void) {
 		/* 2. fd_table 배열 자체의 메모리를 해제 */
 		free(curr->fd_table);
 	#endif
-	sema_up(&curr->wait_sema);
-	
+
+	// curr->parent->exit_status = curr->exit_status;
+	sema_up(&curr->exit_sema);
+	sema_down(&curr->wait_sema);
 	process_cleanup ();
 }
 

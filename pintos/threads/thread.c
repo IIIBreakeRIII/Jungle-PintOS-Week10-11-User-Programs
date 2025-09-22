@@ -209,6 +209,9 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
   init_thread(t, name, priority);
   tid = t->tid = allocate_tid();
   
+  #ifdef USERPROG
+	  list_push_back(&thread_current()->child_list, &t->child_elem);
+  #endif
   list_push_back(&all_list, &t->all_elem);  // all_list에 원소 넣기
 
   if (thread_mlfqs) {  // mlfqs일 경우
@@ -580,6 +583,9 @@ static void init_thread(struct thread *t, const char *name, int priority) {
     list_init(&t->child_list);
     sema_init(&t->wait_sema, 0); // 세마 초기화
     sema_init(&t->fork_sema, 0);
+    sema_init(&t->exit_sema, 0);
+    t->parent = NULL;
+    t->pml4 = NULL;
     t->exit_status = 0;
   #endif
 }

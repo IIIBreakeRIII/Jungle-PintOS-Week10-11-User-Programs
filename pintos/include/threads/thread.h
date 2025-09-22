@@ -118,9 +118,11 @@ struct thread {
   struct list child_list;       // 부모가 자신의 자식 스레드들을 담아둘 리스트
   struct list_elem child_elem;  // 자식 스레드가 부모의 child_list에 연결될때 사용할 고리
   struct semaphore wait_sema; // 부모가 자식을 기다릴 때 사용하는 세마포어
-  
   struct semaphore fork_sema;  // fork된 자식 세마포어
+  struct semaphore exit_sema;  // fork된 자식 세마포어
+
   struct intr_frame* parent_if; // 부모의 프레임
+  struct thread* parent;  // 부모 스레드 추가
 
   int exit_status;
 

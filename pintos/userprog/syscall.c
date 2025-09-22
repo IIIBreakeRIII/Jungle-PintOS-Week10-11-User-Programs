@@ -31,7 +31,7 @@ int sys_read(struct intr_frame* f UNUSED);
 bool is_invaild_fd(int fd);
 bool is_valid_address(void *address);
 tid_t fork_(struct intr_frame* f UNUSED);
-tid_t wait_(struct intr_frame* f UNUSED);
+int wait_(struct intr_frame* f UNUSED);
 
 
 /* System call.
@@ -99,7 +99,7 @@ syscall_handler (struct intr_frame *f UNUSED) {
     }
 }
 
-tid_t wait_(struct intr_frame* f UNUSED) {
+int wait_(struct intr_frame* f UNUSED) {
 	tid_t pid = f->R.rdi;
 	return process_wait(pid);
 }
@@ -109,7 +109,7 @@ tid_t fork_(struct intr_frame* f UNUSED) {
 	if (!is_valid_user_string(thread_name)) {
 		sys_exit(EXIT_STATUS);
     }
-	return process_fork(thread_name, &f);
+	return process_fork(thread_name, f);
 }
 
 int sys_file_size(struct intr_frame* f UNUSED) {
