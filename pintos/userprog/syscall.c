@@ -32,6 +32,7 @@ bool is_invaild_fd(int fd);
 bool is_valid_address(void *address);
 tid_t fork_(struct intr_frame* f UNUSED);
 int wait_(struct intr_frame* f UNUSED);
+int exec_(struct intr_frame* f UNUSED);
 
 
 /* System call.
@@ -102,7 +103,8 @@ syscall_handler (struct intr_frame *f UNUSED) {
     }
 }
 
-int exec_(struct intr_frame* f UNUSED){
+
+int exec_(struct intr_frame* f UNUSED) {
 	char* cmd_line = f->R.rdi;
 
 	if (!is_valid_user_string(cmd_line)) {
@@ -116,21 +118,11 @@ int exec_(struct intr_frame* f UNUSED){
 		return -1;
 
 	memcpy(cmd_copy, cmd_line, size);
-	// strlcpy(thread_current()->name, cmd_copy[0], strlen(cmd_copy[0]) + 1);
-
-	// char *save_ptr;
-	// char *delim = " ";
-	// char *argv_temp[MAX_BUFFER_SIZE];
-	// int argc = 0;
-
-	// argv_temp[argc] = strtok_r(cmd_copy, delim, &save_ptr);
-	// while (argv_temp[argc] != NULL) {
-	// 	argc++;
-	// 	argv_temp[argc] = strtok_r(NULL, delim, &save_ptr);
-	// }
-	
-	if (process_exec(cmd_copy) == -1)
-		return -1;
+	int status = process_exec(cmd_copy);
+	if (status == -1) {
+		palloc_free_page(cmd_copy);
+		sys_exit(EXIT_STATUS);
+	}
 
 	return 0;
 }

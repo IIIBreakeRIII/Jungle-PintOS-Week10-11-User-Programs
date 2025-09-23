@@ -401,8 +401,8 @@ process_wait (tid_t child_tid UNUSED) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
-	struct thread* child_thread = get_thread_by_tid(child_tid);
-	struct thread* current_thread = thread_current();
+	struct thread* child_thread = get_thread_by_tid(child_tid); // tid = 3, tid = 4
+	struct thread* current_thread = thread_current(); // tid = 1, tid = 3
 	if (child_thread == NULL) {
 		return -1;
 	}
@@ -411,11 +411,13 @@ process_wait (tid_t child_tid UNUSED) {
 	int status = child_thread->exit_status;
 	// wait가 끝난 자식은 부모의 목록에서 제거 list_remove()
 	list_remove(&child_thread->child_elem);
-	// exit same up
+
 	sema_up(&current_thread->wait_sema);
+	// palloc_free_page(child_thread);
 
 	return status;
 }
+
 
 /* Exit the process. This function is called by thread_exit (). */
 // 1. parent에게 정보를 넘겨주기 전까지 죽지 않기 - sema 추가
@@ -438,9 +440,9 @@ process_exit (void) {
 		free(curr->fd_table);
 	#endif
 
+	process_cleanup ();
 	sema_up(&curr->exit_sema);
 	sema_down(&curr->wait_sema);
-	process_cleanup ();
 }
 
 /* Free the current process's resources. */
