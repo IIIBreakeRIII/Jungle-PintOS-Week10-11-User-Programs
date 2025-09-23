@@ -35,6 +35,10 @@ typedef int tid_t;
 #define PRI_DEFAULT 31 /* Default priority. */
 #define PRI_MAX 63     /* Highest priority. */
 
+/* File descriptor table range */
+#define FDBASE 2       /* 0: stdin, 1: stdout -> user fds start at 2 */
+#define FDLIMIT 64     /* Maximum number of file descriptors per thread */
+
 /* A kernel thread or user process.
  *
  * Each thread structure is stored in its own 4 kB page.  The
@@ -98,6 +102,14 @@ typedef int tid_t;
 
 // }
 
+struct child_info {
+  bool finished;
+  tid_t c_tid;
+  int c_exit_code;
+  struct list_elem c_elem;
+  struct semaphore c_sema;
+};
+
 struct thread {
   /* Owned by thread.c. */
   tid_t tid;                 /* Thread identifier. */
@@ -126,10 +138,20 @@ struct thread {
 
   int exit_status;
 
+  bool exit_check;
+  int64_t wakeup_tick;
+  struct lock* wait_on_lock;
+  struct thread *my_parent;
+  struct file *my_file;
+  struct child_info *my_info;
+  struct file* fd_table[FDLIMIT];
+  bool abc;
+  struct list_elem donation_elem;
+  struct list donations;
+
 #ifdef USERPROG
   /* Owned by userprog/process.c. */
   uint64_t *pml4; /* Page map level 4 */
-  struct file *fd_table[64]; /* 파일 디스크립터 테이블 */
 #endif
 #ifdef VM
   /* Table for whole virtual memory owned by thread. */

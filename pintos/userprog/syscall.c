@@ -32,13 +32,13 @@ int sys_read_handler(int fd, void *buffer, unsigned size);
 int sys_write_handler(int fd, const char *buffer, unsigned size);
 int sys_open_handler(const char*filename);
 int sys_exec_handler(const char *cmd_line);
+int sys_fork_handler(const char *thread_name, struct intr_frame *f);
 
 // 전역 파일시스템 락 실제 정의
 struct lock filesys_lock;
 
 // 파일 디스크립터 관련 상수
-#define FDBASE 2    // 표준 입출력(0,1) 제외하고 시작
-#define FDLIMIT 64  // 최대 파일 디스크립터 개수
+/* thread.h에 정의된 상수를 사용 (중복 제거) */
 
 #define MSR_STAR 0xc0000081         /* 세그먼트 셀렉터 MSR */
 #define MSR_LSTAR 0xc0000082        /* 롱 모드 SYSCALL 타겟 */
@@ -104,6 +104,29 @@ void syscall_handler (struct intr_frame *f UNUSED) {
     case SYS_EXEC:
       f->R.rax = sys_exec_handler((const char *)f->R.rdi);
       break;
+    
+    case SYS_FORK:
+      f->R.rax = sys_fork_handler((const char *)f->R.rdi, f);
+      break;
+
+    case SYS_WAIT:
+      f->R.rax = process_wait((tid_t)f->R.rdi);
+      break;
+
+    case SYS_CLOSE: {
+      int fd = (int)f->R.rdi;
+      struct thread *curr = thread_current();
+      if (fd >= FDBASE && fd < FDLIMIT && curr->fd_table[fd] != NULL) {
+        lock_acquire(&filesys_lock);
+        file_close(curr->fd_table[fd]);
+        lock_release(&filesys_lock);
+        curr->fd_table[fd] = NULL;
+        f->R.rax = 0;
+      } else {
+        f->R.rax = -1;
+      }
+      break;
+    }
 
     default:
       break;
@@ -185,8 +208,15 @@ int sys_read_handler(int fd, void *buffer, unsigned size){
       return (int) size;
   }
 
-  // 파일 입력은 아직 미구현
-  return -1;
+  struct thread *curr = thread_current();
+  if (fd < FDBASE || fd >= FDLIMIT || curr->fd_table[fd] == NULL) {
+    return -1;
+  }
+  int bytes = -1;
+  lock_acquire(&filesys_lock);
+  bytes = file_read(curr->fd_table[fd], buffer, size);
+  lock_release(&filesys_lock);
+  return bytes;
 }
 
 int sys_exec_handler(const char *cmd_line) {
@@ -264,4 +294,8 @@ int sys_open_handler(const char *filename){
 	lock_release(&filesys_lock);
 	
   return -1;
+}
+
+int sys_fork_handler(const char *thread_name, struct intr_frame *f) {
+  return process_fork(thread_name, f);
 }
