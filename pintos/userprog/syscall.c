@@ -130,6 +130,8 @@ int exec_(struct intr_frame* f UNUSED) {
 int wait_(struct intr_frame* f UNUSED) {
 	tid_t pid = f->R.rdi;
 	return process_wait(pid);
+
+	
 }
 
 tid_t fork_(struct intr_frame* f UNUSED) {
