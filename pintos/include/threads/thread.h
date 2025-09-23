@@ -124,12 +124,13 @@ struct thread {
   struct intr_frame* parent_if; // 부모의 프레임
   struct thread* parent;  // 부모 스레드 추가
   int exit_status;
+  bool has_been_waited;
+  struct file* runn_file;
 
 #ifdef USERPROG
   /* Owned by userprog/process.c. */
   uint64_t *pml4; /* Page map level 4 */
   struct file** fd_table;
-  // int fd_index;
 #endif
 #ifdef VM
   /* Table for whole virtual memory owned by thread. */

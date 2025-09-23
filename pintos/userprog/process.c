@@ -401,19 +401,19 @@ process_wait (tid_t child_tid UNUSED) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
-	struct thread* child_thread = get_thread_by_tid(child_tid); // tid = 3, tid = 4
-	struct thread* current_thread = thread_current(); // tid = 1, tid = 3
-	if (child_thread == NULL) {
+	struct thread* child_thread = get_thread_by_tid(child_tid);
+	struct thread* current_thread = thread_current();
+	if (child_thread == NULL || child_thread->has_been_waited) {
 		return -1;
 	}
+
 	// 찾은 자식 스레드의 세마포어에 sema_down() 호출
 	sema_down(&child_thread->exit_sema);
 	int status = child_thread->exit_status;
+	child_thread->has_been_waited = true;
 	// wait가 끝난 자식은 부모의 목록에서 제거 list_remove()
 	list_remove(&child_thread->child_elem);
-
 	sema_up(&current_thread->wait_sema);
-	// palloc_free_page(child_thread);
 
 	return status;
 }
@@ -438,8 +438,12 @@ process_exit (void) {
 		}
 		/* 2. fd_table 배열 자체의 메모리를 해제 */
 		free(curr->fd_table);
+		if (curr->runn_file != NULL) {
+        	file_close(curr->runn_file);
+    	}
 	#endif
 
+	// palloc_free_multiple(curr->fd_table, FDPAGES);
 	process_cleanup ();
 	sema_up(&curr->exit_sema);
 	sema_down(&curr->wait_sema);
@@ -567,6 +571,8 @@ load (const char *file_name, struct intr_frame *if_) {
 		printf ("load: %s: open failed\n", file_name);
 		goto done;
 	}
+	file_deny_write(file);
+	t->runn_file = file;
 
 	/* Read and verify executable header. */
 	if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -647,7 +653,7 @@ load (const char *file_name, struct intr_frame *if_) {
 
 done:
 	/* We arrive here whether the load is successful or not. */
-	file_close (file);
+	// file_close (file);
 	return success;
 }
 

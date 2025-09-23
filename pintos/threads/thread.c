@@ -584,6 +584,7 @@ static void init_thread(struct thread *t, const char *name, int priority) {
     sema_init(&t->wait_sema, 0); // 세마 초기화
     sema_init(&t->fork_sema, 0);
     sema_init(&t->exit_sema, 0);
+    t->has_been_waited = false;
     t->parent = NULL;
     // t->fd_index = 3; 
     t->pml4 = NULL;
