@@ -31,6 +31,8 @@ typedef int tid_t;
 #define PRI_DEFAULT 31 /* Default priority. */
 #define PRI_MAX 63     /* Highest priority. */
 
+#define FD_MAX 128
+
 /* A kernel thread or user process.
  *
  * Each thread structure is stored in its own 4 kB page.  The
@@ -89,10 +91,7 @@ typedef int tid_t;
  * ready state is on the run queue, whereas only a thread in the
  * blocked state is on a semaphore wait list. */
 
-// struct child_process {
-// 	tid_t tid;
-
-// }
+#define FDCOUNT_LIMIT 1 << 9 // 페이지 크기 4kb / 파일 포인터 8바이트 = 512
 
 struct thread {
   /* Owned by thread.c. */
@@ -119,12 +118,19 @@ struct thread {
   struct list child_list;       // 부모가 자신의 자식 스레드들을 담아둘 리스트
   struct list_elem child_elem;  // 자식 스레드가 부모의 child_list에 연결될때 사용할 고리
   struct semaphore wait_sema; // 부모가 자식을 기다릴 때 사용하는 세마포어
+  struct semaphore fork_sema;  // fork된 자식 세마포어
+  struct semaphore exit_sema;  // fork된 자식 세마포어
 
+  struct intr_frame* parent_if; // 부모의 프레임
+  struct thread* parent;  // 부모 스레드 추가
   int exit_status;
+  bool has_been_waited;
+  struct file* runn_file;
 
 #ifdef USERPROG
   /* Owned by userprog/process.c. */
   uint64_t *pml4; /* Page map level 4 */
+  struct file** fd_table;
 #endif
 #ifdef VM
   /* Table for whole virtual memory owned by thread. */
@@ -179,5 +185,6 @@ void mlfqs_update_priority(struct thread *t);
 bool thread_priority_less(const struct list_elem *, const struct list_elem *, void *);
 bool is_not_idle(struct thread *);
 int max_priority_mlfqs_queue(void);
+struct thread *get_thread_by_tid (tid_t tid);
 
 #endif /* threads/thread.h */
