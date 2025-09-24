@@ -214,7 +214,6 @@ __do_fork (void *aux) {
 	struct intr_frame if_;
 	struct thread *parent = (struct thread *) aux;
 	struct thread *child = thread_current();
-	// current->parent = parent;
 
 	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
 	struct intr_frame *parent_if = parent->parent_if;
@@ -439,6 +438,7 @@ process_exit (void) {
 		/* 2. fd_table 배열 자체의 메모리를 해제 */
 		free(curr->fd_table);
 		if (curr->runn_file != NULL) {
+			file_allow_write(curr->runn_file);
         	file_close(curr->runn_file);
     	}
 	#endif
@@ -571,6 +571,7 @@ load (const char *file_name, struct intr_frame *if_) {
 		printf ("load: %s: open failed\n", file_name);
 		goto done;
 	}
+
 	t->runn_file = file;
 	file_deny_write(file);
 

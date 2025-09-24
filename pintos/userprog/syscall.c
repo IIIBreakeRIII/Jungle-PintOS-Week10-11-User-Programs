@@ -118,6 +118,7 @@ int exec_(struct intr_frame* f UNUSED) {
 		return -1;
 
 	memcpy(cmd_copy, cmd_line, size);
+
 	int status = process_exec(cmd_copy);
 	if (status == -1) {
 		palloc_free_page(cmd_copy);
@@ -257,6 +258,8 @@ int sys_open(struct intr_frame* f UNUSED) {
 
 	// 3. 파일 열기 (동기화 포함)
 	lock_acquire(&filesys_lock);
+	// t->runn_file = file_reopen(file);  // 여기서 reopen 해야 프로세스 전용 핸들 생성
+	// file_deny_write(t->runn_file);
 	struct file* file_obj = filesys_open(file_name);
 	lock_release(&filesys_lock);
 
